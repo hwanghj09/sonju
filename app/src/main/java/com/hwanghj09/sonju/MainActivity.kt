@@ -1,16 +1,21 @@
 package com.hwanghj09.sonju
 
+import android.Manifest
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.view.View
 import android.view.accessibility.AccessibilityManager
@@ -36,7 +41,6 @@ import com.hwanghj09.sonju.accessibility.SonjuAccessibilityService
 import com.hwanghj09.sonju.agent.ActionType
 import com.hwanghj09.sonju.agent.AgentPlan
 import com.hwanghj09.sonju.agent.ContextLifetime
-import com.hwanghj09.sonju.agent.PlanSource
 import com.hwanghj09.sonju.agent.RuleBasedPlanner
 import com.hwanghj09.sonju.agent.RiskLevel
 import com.hwanghj09.sonju.agent.SafetyAssessment
@@ -45,6 +49,9 @@ import com.hwanghj09.sonju.agent.SafetyPolicy
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.agent.displayName
 import com.hwanghj09.sonju.ai.GeminiPlanner
+import com.hwanghj09.sonju.shopping.BaeminOrderRequest
+import com.hwanghj09.sonju.shopping.BaeminOrderRequestParser
+import com.hwanghj09.sonju.voice.WakeWordService
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
@@ -53,6 +60,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var serviceStatusTitle: TextView
     private lateinit var serviceStatusDescription: TextView
     private lateinit var serviceActionButton: MaterialButton
+    private lateinit var wakeWordDescription: TextView
+    private lateinit var wakeWordActionButton: MaterialButton
     private lateinit var mainScroll: NestedScrollView
     private lateinit var commandInput: TextInputEditText
     private lateinit var voiceReviewText: TextView
@@ -71,12 +80,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var fromOverlay = false
     private var externalSnapshot: UiSnapshot? = null
     private var externalVisionSemanticMap: String? = null
+    private var externalRawScreenshot = false
     private var externalContextCapturedAtElapsedRealtime = 0L
     private var externalContextSessionId = 0L
     private val contextExpiryHandler = Handler(Looper.getMainLooper())
     private var contextExpiryRunnable: Runnable? = null
     private var confirmationDialog: AlertDialog? = null
     private var awaitingVoiceRecognition = false
+    private var autoExecuteVoiceResult = false
     private var voiceOverlaySessionId = 0L
     private var busy = false
     private var requestGeneration = 0L
@@ -84,7 +95,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private val voiceLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
+        resumeWakeWordListening()
         awaitingVoiceRecognition = false
+        val shouldAutoExecute = autoExecuteVoiceResult
+        autoExecuteVoiceResult = false
         val launchedOverlaySessionId = voiceOverlaySessionId
         voiceOverlaySessionId = 0L
         if (launchedOverlaySessionId != 0L &&
@@ -108,6 +122,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (!heard.isNullOrBlank()) {
                 commandInput.setText(heard)
                 commandInput.setSelection(heard.length)
+                if (shouldAutoExecute) {
+                    voiceReviewText.visibility = View.GONE
+                    commandInput.post { handleCommand(autoStarted = true) }
+                    return@registerForActivityResult
+                }
                 val reviewMessage = getString(R.string.voice_review, heard)
                 resultCard.visibility = View.GONE
                 voiceReviewText.text = reviewMessage
@@ -126,6 +145,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    private val wakeWordPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { permissions ->
+        if (permissions[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            setWakeWordEnabled(true)
+            startWakeWordService()
+        } else {
+            showToast(getString(R.string.wake_word_permission_denied))
+            updateWakeWordStatus()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -140,10 +174,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         configureActions()
         textToSpeech = TextToSpeech(this, this)
         receiveOverlayContext(intent)
+        receiveBaeminIntent(intent)
 
         val preferences = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
         if (!preferences.getBoolean(KEY_DISCLOSURE_ACCEPTED, false)) {
             showPrivacyDisclosure(firstRun = true)
+        } else if (!preferences.contains(KEY_VISUAL_SCREEN_CONSENT)) {
+            showVisualScreenDisclosure()
         }
     }
 
@@ -151,11 +188,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         super.onNewIntent(intent)
         setIntent(intent)
         receiveOverlayContext(intent)
+        receiveBaeminIntent(intent)
     }
 
     override fun onResume() {
         super.onResume()
+        maybeRestoreWakeWordService()
         updateServiceStatus()
+        updateWakeWordStatus()
     }
 
     override fun onStop() {
@@ -193,6 +233,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         serviceStatusTitle = findViewById(R.id.serviceStatusTitle)
         serviceStatusDescription = findViewById(R.id.serviceStatusDescription)
         serviceActionButton = findViewById(R.id.serviceActionButton)
+        wakeWordDescription = findViewById(R.id.wakeWordDescription)
+        wakeWordActionButton = findViewById(R.id.wakeWordActionButton)
         commandInput = findViewById(R.id.commandInput)
         voiceReviewText = findViewById(R.id.voiceReviewText)
         voiceButton = findViewById(R.id.voiceButton)
@@ -204,6 +246,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         resultText = findViewById(R.id.resultText)
         competingControls = listOf<View>(
             serviceActionButton,
+            wakeWordActionButton,
             findViewById(R.id.chipWifi),
             findViewById(R.id.chipDisplay),
             findViewById(R.id.chipScroll),
@@ -223,10 +266,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 else -> showAccessibilityGuide()
             }
         }
+        wakeWordActionButton.setOnClickListener {
+            if (WakeWordService.running) {
+                stopWakeWordService()
+            } else {
+                showWakeWordDisclosure()
+            }
+        }
         voiceButton.setOnClickListener {
             val accepted = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
                 .getBoolean(KEY_VOICE_DISCLOSURE_ACCEPTED, false)
-            if (accepted) startVoiceInput() else showVoiceDisclosure()
+            if (accepted) startVoiceInput() else showVoiceDisclosure(autoExecute = false)
         }
         runCommandButton.setOnClickListener { handleCommand() }
         commandInput.doAfterTextChanged {
@@ -265,12 +315,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun receiveOverlayContext(intent: Intent) {
+        val directVoiceCommand = intent.getStringExtra(
+            SonjuAccessibilityService.EXTRA_VOICE_COMMAND,
+        )?.trim()?.takeIf(String::isNotBlank)
+        val autoStartVoice = intent.getBooleanExtra(
+            SonjuAccessibilityService.EXTRA_AUTO_START_VOICE,
+            false,
+        )
         val requestedFromOverlay = intent.getBooleanExtra(
             SonjuAccessibilityService.EXTRA_FROM_OVERLAY,
             false,
         )
         if (!requestedFromOverlay) {
             clearOverlayContext()
+            when {
+                directVoiceCommand != null -> scheduleAutomaticCommand(directVoiceCommand)
+                autoStartVoice -> scheduleAutomaticVoiceInput()
+            }
             return
         }
         if (fromOverlay || busy || confirmationDialog != null) {
@@ -287,12 +348,42 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         fromOverlay = true
         externalSnapshot = context.snapshot
         externalVisionSemanticMap = context.visionSemanticMap
+        externalRawScreenshot = context.rawScreenshot
         externalContextCapturedAtElapsedRealtime = context.capturedAtElapsedRealtime
         externalContextSessionId = context.sessionId
         scheduleOverlayContextExpiry(context.sessionId, context.capturedAtElapsedRealtime)
+        if (directVoiceCommand != null) {
+            scheduleAutomaticCommand(directVoiceCommand)
+        } else if (autoStartVoice) {
+            scheduleAutomaticVoiceInput()
+        } else {
+            commandInput.post {
+                commandInput.requestFocus()
+                showKeyboard()
+            }
+        }
+    }
+
+    private fun scheduleAutomaticVoiceInput() {
         commandInput.post {
-            commandInput.requestFocus()
-            showKeyboard()
+            val accepted = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                .getBoolean(KEY_VOICE_DISCLOSURE_ACCEPTED, false)
+            if (accepted) {
+                startVoiceInput(autoExecute = true)
+            } else {
+                showVoiceDisclosure(autoExecute = true)
+            }
+        }
+    }
+
+    private fun scheduleAutomaticCommand(command: String) {
+        commandInput.post {
+            val safeCommand = command.take(500)
+            commandInput.setText(safeCommand)
+            commandInput.setSelection(safeCommand.length)
+            voiceReviewText.visibility = View.GONE
+            resumeWakeWordListening()
+            handleCommand(autoStarted = true)
         }
     }
 
@@ -324,7 +415,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             .any { it == expected }
     }
 
-    private fun startVoiceInput() {
+    private fun startVoiceInput(autoExecute: Boolean = false) {
+        pauseWakeWordListening()
+        autoExecuteVoiceResult = autoExecute
         voiceReviewText.visibility = View.GONE
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -336,6 +429,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         voiceOverlaySessionId = if (fromOverlay) externalContextSessionId else 0L
         runCatching { voiceLauncher.launch(intent) }
             .onFailure {
+                resumeWakeWordListening()
+                autoExecuteVoiceResult = false
                 awaitingVoiceRecognition = false
                 voiceOverlaySessionId = 0L
                 voiceReviewText.visibility = View.GONE
@@ -343,7 +438,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
     }
 
-    private fun showVoiceDisclosure() {
+    private fun showVoiceDisclosure(autoExecute: Boolean) {
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.voice_privacy_title)
             .setMessage(R.string.voice_privacy_message)
@@ -353,9 +448,122 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     .edit()
                     .putBoolean(KEY_VOICE_DISCLOSURE_ACCEPTED, true)
                     .apply()
-                startVoiceInput()
+                startVoiceInput(autoExecute)
             }
             .show()
+    }
+
+    private fun updateWakeWordStatus() {
+        wakeWordDescription.setText(
+            if (WakeWordService.running) {
+                R.string.wake_word_on_description
+            } else {
+                R.string.wake_word_off_description
+            },
+        )
+        wakeWordActionButton.setText(
+            if (WakeWordService.running) R.string.wake_word_stop else R.string.wake_word_start,
+        )
+    }
+
+    private fun showWakeWordDisclosure() {
+        if (!isServiceEnabledInSettings()) {
+            showToast(getString(R.string.wake_word_accessibility_required))
+            showAccessibilityGuide()
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
+        ) {
+            showToast(getString(R.string.wake_word_on_device_unavailable))
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.wake_word_disclosure_title)
+            .setMessage(R.string.wake_word_disclosure_message)
+            .setNegativeButton(R.string.privacy_not_now, null)
+            .setPositiveButton(R.string.wake_word_disclosure_accept) { _, _ ->
+                requestWakeWordPermissions()
+            }
+            .show()
+    }
+
+    private fun requestWakeWordPermissions() {
+        val permissions = buildList {
+            if (ContextCompat.checkSelfPermission(
+                    this@MainActivity,
+                    Manifest.permission.RECORD_AUDIO,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                add(Manifest.permission.RECORD_AUDIO)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(
+                    this@MainActivity,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        if (permissions.isEmpty()) {
+            setWakeWordEnabled(true)
+            startWakeWordService()
+        } else {
+            wakeWordPermissionLauncher.launch(permissions.toTypedArray())
+        }
+    }
+
+    private fun maybeRestoreWakeWordService() {
+        val shouldRun = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .getBoolean(KEY_WAKE_WORD_ENABLED, false)
+        if (!shouldRun || WakeWordService.running || !isServiceEnabledInSettings()) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED ||
+            !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
+        ) {
+            return
+        }
+        startWakeWordService()
+    }
+
+    private fun setWakeWordEnabled(enabled: Boolean) {
+        getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_WAKE_WORD_ENABLED, enabled)
+            .apply()
+    }
+
+    private fun startWakeWordService() {
+        runCatching {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, WakeWordService::class.java),
+            )
+        }.onFailure {
+            showToast(getString(R.string.generic_error))
+        }
+        wakeWordActionButton.postDelayed({ updateWakeWordStatus() }, 500L)
+    }
+
+    private fun stopWakeWordService() {
+        setWakeWordEnabled(false)
+        stopService(Intent(this, WakeWordService::class.java))
+        wakeWordActionButton.postDelayed({ updateWakeWordStatus() }, 300L)
+    }
+
+    private fun pauseWakeWordListening() {
+        sendWakeWordAction(WakeWordService.ACTION_PAUSE)
+    }
+
+    private fun resumeWakeWordListening() {
+        sendWakeWordAction(WakeWordService.ACTION_RESUME)
+    }
+
+    private fun sendWakeWordAction(action: String) {
+        if (!WakeWordService.running) return
+        startService(Intent(this, WakeWordService::class.java).setAction(action))
     }
 
     private fun runQuickCommand(command: String) {
@@ -377,7 +585,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun handleCommand() {
+    private fun handleCommand(autoStarted: Boolean = false) {
         if (busy) return
         if (fromOverlay && !ContextLifetime.isFresh(
                 SystemClock.elapsedRealtime(),
@@ -397,6 +605,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             commandInput.requestFocus()
             return
         }
+        BaeminOrderRequestParser.parse(command)?.let { request ->
+            hideKeyboard()
+            voiceReviewText.visibility = View.GONE
+            if (autoStarted) {
+                startBaeminAutomatically(request)
+            } else {
+                showBaeminStartConfirmation(request)
+            }
+            return
+        }
         SafetyPolicy.preflightCommand(command)?.let { assessment ->
             hideKeyboard()
             showBlocked(assessment)
@@ -414,6 +632,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         externalSnapshot = null
         val preRenderedSemanticMap = externalVisionSemanticMap
         externalVisionSemanticMap = null
+        val rawScreenshot = externalRawScreenshot
+        externalRawScreenshot = false
 
         val localPlan = RuleBasedPlanner.plan(command, snapshot)
         if (localPlan != null) {
@@ -422,7 +642,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        SafetyPolicy.highRiskScreenReason(snapshot)?.let { reason ->
+        SafetyPolicy.highRiskScreenReason(
+            snapshot,
+            allowTruncated = rawScreenshot,
+        )?.let { reason ->
             showBlocked(
                 SafetyAssessment(
                     decision = SafetyDecision.BLOCK,
@@ -440,10 +663,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         showProgress(getString(R.string.progress_plan))
         if (preRenderedSemanticMap != null) {
-            progressDetail.text = "민감 정보를 뺀 버튼 배치도를 한 번 더 확인하고 있어요"
-            requestGeminiPlan(command, snapshot, preRenderedSemanticMap, generation)
+            progressDetail.text = if (rawScreenshot) {
+                "현재 화면 이미지에서 안전한 버튼 하나를 확인하고 있어요"
+            } else {
+                "민감 정보를 뺀 버튼 배치도를 한 번 더 확인하고 있어요"
+            }
+            requestGeminiPlan(
+                command,
+                snapshot,
+                preRenderedSemanticMap,
+                rawScreenshot,
+                generation,
+            )
         } else {
-            requestGeminiPlan(command, snapshot, semanticMap = null, generation)
+            requestGeminiPlan(
+                command,
+                snapshot,
+                semanticMap = null,
+                rawScreenshot = false,
+                generation,
+            )
         }
     }
 
@@ -451,9 +690,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         command: String,
         snapshot: UiSnapshot,
         semanticMap: String?,
+        rawScreenshot: Boolean,
         generation: Long,
     ) {
-        geminiPlanner.planAsync(command, snapshot, semanticMap) { result ->
+        geminiPlanner.planAsync(command, snapshot, semanticMap, rawScreenshot) { result ->
             runOnUiThread {
                 if (generation != requestGeneration || isFinishing || isDestroyed) return@runOnUiThread
                 result.fold(
@@ -485,13 +725,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         when (assessment.decision) {
             SafetyDecision.BLOCK -> showBlocked(assessment)
             SafetyDecision.REQUIRE_CONFIRMATION -> showConfirmation(plan, assessment, snapshot)
-            SafetyDecision.ALLOW -> {
-                if (plan.source == PlanSource.LOCAL_RULE) {
-                    executePlan(plan, snapshot)
-                } else {
-                    showConfirmation(plan, assessment, snapshot)
-                }
-            }
+            SafetyDecision.ALLOW -> executePlan(plan, snapshot)
         }
     }
 
@@ -631,9 +865,33 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     showAccessibilityGuide()
                 }
         } else {
-            builder.setPositiveButton(R.string.privacy_close, null)
+            builder
+                .setNeutralButton(R.string.visual_screen_settings) { _, _ ->
+                    showVisualScreenDisclosure()
+                }
+                .setPositiveButton(R.string.privacy_close, null)
         }
         builder.show()
+    }
+
+    private fun showVisualScreenDisclosure() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.visual_screen_disclosure_title)
+            .setMessage(R.string.visual_screen_disclosure_message)
+            .setNegativeButton(R.string.visual_screen_decline) { _, _ ->
+                getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(KEY_VISUAL_SCREEN_CONSENT, false)
+                    .apply()
+            }
+            .setPositiveButton(R.string.visual_screen_accept) { _, _ ->
+                getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(KEY_VISUAL_SCREEN_CONSENT, true)
+                    .apply()
+                showToast(getString(R.string.visual_screen_enabled))
+            }
+            .show()
     }
 
     private fun openAccessibilitySettings() {
@@ -641,7 +899,82 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             .onFailure { showToast(getString(R.string.generic_error)) }
     }
 
+    private fun showBaeminStartConfirmation(request: BaeminOrderRequest) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.baemin_start_title)
+            .setMessage(getString(R.string.baemin_start_message, request.query))
+            .setNegativeButton(R.string.confirm_cancel, null)
+            .setPositiveButton(R.string.baemin_start) { _, _ ->
+                startBaeminAutomatically(request)
+            }
+            .show()
+    }
+
+    private fun startBaeminAutomatically(request: BaeminOrderRequest) {
+        val service = SonjuAccessibilityService.instance
+        if (service == null || !service.startBaeminOrder(request.query)) {
+            showResult(getString(R.string.baemin_unavailable), success = false)
+        } else {
+            clearOverlayContext()
+            showToast(getString(R.string.baemin_started, request.query))
+        }
+    }
+
+    private fun receiveBaeminIntent(intent: Intent) {
+        val review = intent.getStringExtra(SonjuAccessibilityService.EXTRA_BAEMIN_REVIEW)
+        if (!review.isNullOrBlank()) {
+            intent.removeExtra(SonjuAccessibilityService.EXTRA_BAEMIN_REVIEW)
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.baemin_final_title)
+                .setMessage(review)
+                .setCancelable(false)
+                .setNegativeButton(R.string.baemin_cancel_order) { _, _ ->
+                    SonjuAccessibilityService.instance?.cancelBaeminOrder()
+                    finish()
+                }
+                .setPositiveButton(R.string.baemin_confirm_order) { _, _ ->
+                    SonjuAccessibilityService.instance?.confirmBaeminCommit()
+                }
+                .show()
+        }
+        val status = intent.getStringExtra(SonjuAccessibilityService.EXTRA_BAEMIN_STATUS)
+        if (!status.isNullOrBlank()) {
+            val success = intent.getBooleanExtra(
+                SonjuAccessibilityService.EXTRA_BAEMIN_STATUS_SUCCESS,
+                false,
+            )
+            intent.removeExtra(SonjuAccessibilityService.EXTRA_BAEMIN_STATUS)
+            intent.removeExtra(SonjuAccessibilityService.EXTRA_BAEMIN_STATUS_SUCCESS)
+            showResult(status, success)
+            speak(status)
+        }
+    }
+
+    private fun openAppDetailsSettings() {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:$packageName"),
+        )
+        runCatching { startActivity(intent) }
+            .onFailure { showToast(getString(R.string.generic_error)) }
+    }
+
     private fun showAccessibilityGuide() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.restricted_settings_guide_title)
+                .setMessage(R.string.restricted_settings_guide_message)
+                .setNegativeButton(R.string.privacy_not_now, null)
+                .setNeutralButton(R.string.restricted_settings_open_accessibility) { _, _ ->
+                    openAccessibilitySettings()
+                }
+                .setPositiveButton(R.string.restricted_settings_open_app_info) { _, _ ->
+                    openAppDetailsSettings()
+                }
+                .show()
+            return
+        }
+
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.accessibility_guide_title)
             .setMessage(R.string.accessibility_guide_message)
@@ -703,6 +1036,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         fromOverlay = false
         externalSnapshot = null
         externalVisionSemanticMap = null
+        externalRawScreenshot = false
         externalContextCapturedAtElapsedRealtime = 0L
         externalContextSessionId = 0L
     }
@@ -727,6 +1061,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun ActionType.requiresExternalScreen(): Boolean = this in setOf(
         ActionType.CLICK,
+        ActionType.VISUAL_CLICK,
         ActionType.SET_TEXT,
         ActionType.SCROLL_DOWN,
         ActionType.SCROLL_UP,
@@ -758,6 +1093,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         private const val PREFERENCES = "sonju_preferences"
         private const val KEY_DISCLOSURE_ACCEPTED = "accessibility_disclosure_accepted_v1"
         private const val KEY_VOICE_DISCLOSURE_ACCEPTED = "voice_disclosure_accepted_v1"
+        private const val KEY_WAKE_WORD_ENABLED = "wake_word_enabled_v1"
+        private const val KEY_VISUAL_SCREEN_CONSENT = "visual_screen_consent_v1"
         private const val CONFIRMATION_DISMISS_DELAY_MILLIS = 200L
         private const val OVERLAY_CONTEXT_TTL_MILLIS = 120_000L
     }

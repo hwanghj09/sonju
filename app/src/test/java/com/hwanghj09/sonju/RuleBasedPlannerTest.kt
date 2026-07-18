@@ -51,6 +51,29 @@ class RuleBasedPlannerTest {
     }
 
     @Test
+    fun explicitAppLaunchesStayOnDevice() {
+        mapOf(
+            "유튜브 열어 줘" to "유튜브",
+            "카카오톡 앱 실행해 줘" to "카카오톡",
+            "배민 들어가 줘" to "배민",
+            "Open Chrome" to "chrome",
+        ).forEach { (command, target) ->
+            val plan = RuleBasedPlanner.plan(command)
+
+            assertEquals(command, PlanSource.LOCAL_RULE, plan?.source)
+            assertEquals(command, ActionType.OPEN_APP, plan?.actions?.first()?.type)
+            assertEquals(command, target, plan?.actions?.first()?.target)
+        }
+    }
+
+    @Test
+    fun genericObjectsAreNotTreatedAsApps() {
+        listOf("설정 열어 줘", "버튼 열어 줘", "파일 열어 줘").forEach { command ->
+            assertNull(command, RuleBasedPlanner.plan(command))
+        }
+    }
+
+    @Test
     fun explicitNegation_neverRunsTheOppositeLocalAction() {
         listOf(
             "카메라 열지 마",

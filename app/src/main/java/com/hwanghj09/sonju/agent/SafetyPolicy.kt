@@ -268,7 +268,10 @@ object SafetyPolicy {
                     "화면 구조를 확실히 읽을 수 없어 버튼·입력·스크롤을 실행하지 않습니다.",
                 )
             }
-            highRiskScreenReason(snapshot)?.let { reason ->
+            highRiskScreenReason(
+                snapshot,
+                allowTruncated = plan.source == PlanSource.GEMINI_RAW_SCREEN,
+            )?.let { reason ->
                 return SafetyAssessment(
                     SafetyDecision.BLOCK,
                     RiskLevel.BLOCKED,
@@ -293,6 +296,23 @@ object SafetyPolicy {
                 RiskLevel.BLOCKED,
                 "안전성이 검토된 저위험 설정 화면이 아니어서 버튼 누르기와 글자 입력을 실행하지 않습니다.",
             )
+        }
+
+        if (nonFinishActions.any { it.type == ActionType.VISUAL_CLICK }) {
+            if (plan.source != PlanSource.GEMINI_RAW_SCREEN ||
+                snapshot.visualFingerprint == null ||
+                VisualTargetResolver.resolveClickablePath(
+                    snapshot,
+                    nonFinishActions.single().x,
+                    nonFinishActions.single().y,
+                ) == null
+            ) {
+                return SafetyAssessment(
+                    SafetyDecision.BLOCK,
+                    RiskLevel.BLOCKED,
+                    "AI가 가리킨 위치에서 안전하게 누를 버튼 하나를 확인하지 못했습니다.",
+                )
+            }
         }
 
         plan.actions.forEach { action ->
@@ -388,7 +408,12 @@ object SafetyPolicy {
         }
 
         val needsConfirmation = plan.modelRisk == RiskLevel.MEDIUM || plan.actions.any { action ->
-            action.type in setOf(ActionType.SET_TEXT, ActionType.OPEN_MESSAGES, ActionType.OPEN_DIALER) ||
+            action.type in setOf(
+                ActionType.SET_TEXT,
+                ActionType.OPEN_MESSAGES,
+                ActionType.OPEN_DIALER,
+                ActionType.VISUAL_CLICK,
+            ) ||
                 confirmationTargetTerms.any { term ->
                     containsPolicyTerm(
                         listOfNotNull(action.target, action.description).joinToString(" "),
@@ -455,8 +480,8 @@ object SafetyPolicy {
         return describedState ?: true.takeIf { element.selected }
     }
 
-    fun highRiskScreenReason(snapshot: UiSnapshot): String? {
-        if (snapshot.treeTruncated) {
+    fun highRiskScreenReason(snapshot: UiSnapshot, allowTruncated: Boolean = false): String? {
+        if (snapshot.treeTruncated && !allowTruncated) {
             return "화면 전체를 안전하게 검사할 수 없어 버튼·입력·스크롤을 실행하거나 모델에 보내지 않습니다."
         }
         if (snapshot.elements.any { it.sensitive }) {
@@ -489,6 +514,7 @@ object SafetyPolicy {
 
     private fun ActionType.requiresStableScreen(): Boolean = this in setOf(
         ActionType.CLICK,
+        ActionType.VISUAL_CLICK,
         ActionType.SET_TEXT,
         ActionType.SCROLL_DOWN,
         ActionType.SCROLL_UP,

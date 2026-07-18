@@ -141,7 +141,13 @@ object RuleBasedPlanner {
                 "^(?:빠른|퀵) 설정(?:창)?(?:을)? (?:열기|열어|보여)$",
             ) -> AgentAction(ActionType.QUICK_SETTINGS, "빠른 설정창을 엽니다.")
 
-            else -> return null
+            else -> parseOpenAppTarget(body)?.let { appName ->
+                AgentAction(
+                    ActionType.OPEN_APP,
+                    "$appName 앱을 엽니다.",
+                    target = appName,
+                )
+            } ?: return null
         }
 
         return planFor(command, action)
@@ -218,6 +224,21 @@ object RuleBasedPlanner {
         return value.replace(requestEnding, "").trim()
     }
 
+    private fun parseOpenAppTarget(body: String): String? {
+        val target = Regex(
+            "^(.{1,40}?)(?:\\s*앱)?(?:을|를)?\\s*(?:열기|열어|켜기|켜|실행하기|실행해|실행|들어가기|들어가)$",
+        ).matchEntire(body)?.groupValues?.get(1)
+            ?: Regex("^open\\s+(.{1,40})$", RegexOption.IGNORE_CASE)
+                .matchEntire(body)?.groupValues?.get(1)
+            ?: return null
+        return target.trim()
+            .takeIf { it.isNotBlank() && compact(it) !in NON_APP_TARGETS }
+    }
+
     private fun String.matchesAny(vararg patterns: String): Boolean =
         patterns.any { pattern -> Regex(pattern, RegexOption.IGNORE_CASE).matches(this) }
+
+    private val NON_APP_TARGETS = setOf(
+        "앱", "화면", "설정", "버튼", "링크", "메뉴", "파일", "문서", "사진", "영상",
+    ).map(::compact).toSet()
 }

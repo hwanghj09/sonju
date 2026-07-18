@@ -13,6 +13,7 @@ enum class ActionType {
     OPEN_DIALER,
     OPEN_MESSAGES,
     CLICK,
+    VISUAL_CLICK,
     SET_TEXT,
     SCROLL_DOWN,
     SCROLL_UP,
@@ -40,6 +41,7 @@ enum class PlanSource {
     LOCAL_RULE,
     GEMINI_STRUCTURE,
     GEMINI_VISION,
+    GEMINI_RAW_SCREEN,
 }
 
 enum class RiskLevel {
@@ -109,6 +111,9 @@ data class UiSnapshot(
     val elements: List<UiElement>,
     val treeTruncated: Boolean = false,
     val trustedSettingsRoute: TrustedSettingsRoute? = null,
+    val visualFingerprint: String? = null,
+    val visualScreenWidth: Int = 0,
+    val visualScreenHeight: Int = 0,
 ) {
     fun hasSemanticSignal(): Boolean =
         elements.count { element ->
@@ -202,6 +207,8 @@ data class AgentAction(
     val target: String? = null,
     val value: String? = null,
     val waitMillis: Long = 0,
+    val x: Int? = null,
+    val y: Int? = null,
 )
 
 data class AgentPlan(
@@ -242,6 +249,7 @@ fun ActionType.displayName(): String = when (this) {
     ActionType.OPEN_DIALER -> "전화 화면 열기"
     ActionType.OPEN_MESSAGES -> "문자 화면 열기"
     ActionType.CLICK -> "버튼 누르기"
+    ActionType.VISUAL_CLICK -> "화면에서 확인한 버튼 누르기"
     ActionType.SET_TEXT -> "글자 입력하기"
     ActionType.SCROLL_DOWN -> "화면 아래로 내리기"
     ActionType.SCROLL_UP -> "화면 위로 올리기"
