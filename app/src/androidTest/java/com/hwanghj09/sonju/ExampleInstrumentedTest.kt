@@ -12,7 +12,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,7 +49,13 @@ class ExampleInstrumentedTest {
                 parser.next()
             }
             val androidNamespace = "http://schemas.android.com/apk/res/android"
-            assertNull(parser.getAttributeValue(androidNamespace, "canTakeScreenshot"))
+            assertTrue(
+                parser.getAttributeBooleanValue(
+                    androidNamespace,
+                    "canTakeScreenshot",
+                    false,
+                ),
+            )
             assertTrue(
                 parser.getAttributeBooleanValue(
                     androidNamespace,
@@ -58,7 +63,13 @@ class ExampleInstrumentedTest {
                     false,
                 ),
             )
-            assertNull(parser.getAttributeValue(androidNamespace, "canPerformGestures"))
+            assertTrue(
+                parser.getAttributeBooleanValue(
+                    androidNamespace,
+                    "canPerformGestures",
+                    false,
+                ),
+            )
         }
     }
 

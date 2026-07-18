@@ -12,386 +12,94 @@
         android:id="@+id/mainScroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:clipToPadding="false"
         android:fillViewport="true">
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center_horizontal"
             android:orientation="vertical"
-            android:paddingStart="20dp"
+            android:paddingStart="22dp"
             android:paddingTop="18dp"
-            android:paddingEnd="20dp"
-            android:paddingBottom="40dp">
+            android:paddingEnd="22dp"
+            android:paddingBottom="28dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
+                android:gravity="end|center_vertical"
                 android:orientation="horizontal">
 
-                <TextView
-                    android:layout_width="54dp"
-                    android:layout_height="54dp"
-                    android:background="@drawable/bg_logo"
-                    android:contentDescription="@string/content_description_logo"
-                    android:fontFamily="sans"
-                    android:gravity="center"
-                    android:text="손"
-                    android:textColor="@color/white"
-                    android:textSize="25sp"
-                    android:textStyle="bold" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="14dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/app_name"
-                        android:textColor="@color/sonju_text"
-                        android:textSize="28sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="1dp"
-                        android:text="@string/app_tagline"
-                        android:textColor="@color/sonju_text_secondary"
-                    android:textSize="16sp" />
-                </LinearLayout>
+                <ImageButton
+                    android:id="@+id/privacyDetailsButton"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/open_privacy_page"
+                    android:padding="13dp"
+                    android:src="@drawable/ic_menu"
+                    app:tint="@color/sonju_text" />
             </LinearLayout>
 
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/serviceStatusCard"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
-                app:cardBackgroundColor="@color/sonju_green_soft"
-                app:cardCornerRadius="22dp"
-                app:cardElevation="0dp"
-                app:strokeColor="@color/sonju_border"
-                app:strokeWidth="1dp">
+            <Space
+                android:layout_width="1dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="18dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
-
-                        <View
-                            android:id="@+id/serviceStatusDot"
-                            android:layout_width="14dp"
-                            android:layout_height="14dp"
-                            android:background="@drawable/bg_status_dot" />
-
-                        <LinearLayout
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="12dp"
-                            android:layout_weight="1"
-                            android:orientation="vertical">
-
-                            <TextView
-                                android:id="@+id/serviceStatusTitle"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="@string/service_off_title"
-                                android:textColor="@color/sonju_text"
-                                android:textSize="18sp"
-                                android:textStyle="bold" />
-
-                            <TextView
-                                android:id="@+id/serviceStatusDescription"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="4dp"
-                                android:lineSpacingExtra="2dp"
-                                android:text="@string/service_off_description"
-                                android:textColor="@color/sonju_text_secondary"
-                                android:textSize="16sp" />
-                        </LinearLayout>
-                    </LinearLayout>
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/serviceActionButton"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:minHeight="56dp"
-                        android:text="@string/service_open_settings"
-                        android:textAllCaps="false"
-                        android:textColor="@color/white"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        app:backgroundTint="@color/sonju_green"
-                        app:cornerRadius="16dp" />
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/wakeWordCard"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                app:cardBackgroundColor="@color/sonju_blue_soft"
-                app:cardCornerRadius="22dp"
-                app:cardElevation="0dp"
-                app:strokeColor="@color/sonju_border"
-                app:strokeWidth="1dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="18dp">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/wake_word_title"
-                        android:textColor="@color/sonju_text"
-                        android:textSize="19sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/wakeWordDescription"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:lineSpacingExtra="3dp"
-                        android:text="@string/wake_word_off_description"
-                        android:textColor="@color/sonju_text_secondary"
-                        android:textSize="16sp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/wakeWordActionButton"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:minHeight="56dp"
-                        android:text="@string/wake_word_start"
-                        android:textAllCaps="false"
-                        android:textColor="@color/white"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        app:backgroundTint="@color/sonju_blue"
-                        app:cornerRadius="16dp"
-                        app:icon="@drawable/ic_mic"
-                        app:iconPadding="8dp"
-                        app:iconTint="@color/white" />
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/voiceButton"
+                android:layout_width="228dp"
+                android:layout_height="228dp"
+                android:contentDescription="@string/voice_button_description"
+                android:gravity="center"
+                android:insetLeft="0dp"
+                android:insetTop="0dp"
+                android:insetRight="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/voice_button"
+                android:textAllCaps="false"
+                android:textColor="@color/white"
+                android:textSize="27sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/sonju_green"
+                app:cornerRadius="114dp"
+                app:elevation="8dp"
+                app:icon="@drawable/ic_mic"
+                app:iconGravity="textTop"
+                app:iconPadding="13dp"
+                app:iconSize="52dp"
+                app:iconTint="@color/white"
+                app:rippleColor="@color/sonju_green_soft" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="30dp"
-                android:text="@string/command_title"
-                android:textColor="@color/sonju_text"
-                android:textSize="25sp"
-                android:textStyle="bold" />
-
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                app:cardBackgroundColor="@color/sonju_surface"
-                app:cardCornerRadius="26dp"
-                app:cardElevation="1dp"
-                app:strokeColor="@color/sonju_border"
-                app:strokeWidth="1dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="18dp">
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:id="@+id/commandInputLayout"
-                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:hint="@string/command_hint"
-                        app:boxBackgroundColor="@color/sonju_surface"
-                        app:boxCornerRadiusBottomEnd="18dp"
-                        app:boxCornerRadiusBottomStart="18dp"
-                        app:boxCornerRadiusTopEnd="18dp"
-                        app:boxCornerRadiusTopStart="18dp"
-                        app:boxStrokeColor="@color/sonju_green">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/commandInput"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:imeOptions="actionDone"
-                            android:inputType="textCapSentences|textMultiLine"
-                            android:maxLines="3"
-                            android:minHeight="76dp"
-                            android:paddingTop="18dp"
-                            android:paddingBottom="14dp"
-                            android:textColor="@color/sonju_text"
-                            android:textSize="19sp" />
-                    </com.google.android.material.textfield.TextInputLayout>
-
-                    <TextView
-                        android:id="@+id/voiceReviewText"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:accessibilityLiveRegion="polite"
-                        android:lineSpacingExtra="3dp"
-                        android:textColor="@color/sonju_green"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        android:visibility="gone"
-                        tools:text="‘와이파이 설정을 열어 줘’로 들었어요. 맞는지 읽어 보고 아래 버튼을 눌러 주세요."
-                        tools:visibility="visible" />
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:orientation="vertical">
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/voiceButton"
-                            style="@style/Widget.Material3.Button.TonalButton"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:minHeight="60dp"
-                            android:text="@string/voice_button"
-                            android:textAllCaps="false"
-                            android:textColor="@color/white"
-                            android:textSize="17sp"
-                            android:textStyle="bold"
-                            app:backgroundTint="@color/sonju_orange"
-                            app:cornerRadius="19dp"
-                            app:icon="@drawable/ic_mic"
-                            app:iconPadding="9dp"
-                            app:iconTint="@color/white" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/runCommandButton"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:minHeight="60dp"
-                            android:text="@string/run_button"
-                            android:textAllCaps="false"
-                            android:textSize="17sp"
-                            android:textStyle="bold"
-                            app:cornerRadius="19dp"
-                            app:icon="@drawable/ic_arrow_forward"
-                            app:iconGravity="textEnd"
-                            app:iconPadding="8dp" />
-                    </LinearLayout>
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
+                android:layout_marginTop="38dp"
                 android:text="@string/quick_help"
                 android:textColor="@color/sonju_text"
-                android:textSize="18sp"
+                android:textSize="21sp"
                 android:textStyle="bold" />
 
-            <com.google.android.material.chip.ChipGroup
-                android:layout_width="match_parent"
+            <TextView
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                app:chipSpacingHorizontal="8dp"
-                app:chipSpacingVertical="8dp"
-                app:singleLine="false">
-
-                <com.google.android.material.chip.Chip
-                    android:id="@+id/chipWifi"
-                    style="@style/Widget.Material3.Chip.Assist"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:minHeight="52dp"
-                    android:text="@string/quick_wifi"
-                    android:textSize="16sp"
-                    app:chipBackgroundColor="@color/sonju_surface"
-                    app:chipStrokeColor="@color/sonju_border"
-                    app:chipStrokeWidth="1dp" />
-
-                <com.google.android.material.chip.Chip
-                    android:id="@+id/chipDisplay"
-                    style="@style/Widget.Material3.Chip.Assist"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:minHeight="52dp"
-                    android:text="@string/quick_display"
-                    android:textSize="16sp"
-                    app:chipBackgroundColor="@color/sonju_surface"
-                    app:chipStrokeColor="@color/sonju_border"
-                    app:chipStrokeWidth="1dp" />
-
-                <com.google.android.material.chip.Chip
-                    android:id="@+id/chipScroll"
-                    style="@style/Widget.Material3.Chip.Assist"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:minHeight="52dp"
-                    android:text="@string/quick_scroll"
-                    android:textSize="16sp"
-                    app:chipBackgroundColor="@color/sonju_surface"
-                    app:chipStrokeColor="@color/sonju_border"
-                    app:chipStrokeWidth="1dp" />
-
-                <com.google.android.material.chip.Chip
-                    android:id="@+id/chipBack"
-                    style="@style/Widget.Material3.Chip.Assist"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:minHeight="52dp"
-                    android:text="@string/quick_back"
-                    android:textSize="16sp"
-                    app:chipBackgroundColor="@color/sonju_surface"
-                    app:chipStrokeColor="@color/sonju_border"
-                    app:chipStrokeWidth="1dp" />
-
-                <com.google.android.material.chip.Chip
-                    android:id="@+id/chipCamera"
-                    style="@style/Widget.Material3.Chip.Assist"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:minHeight="52dp"
-                    android:text="@string/quick_camera"
-                    android:textSize="16sp"
-                    app:chipBackgroundColor="@color/sonju_surface"
-                    app:chipStrokeColor="@color/sonju_border"
-                    app:chipStrokeWidth="1dp" />
-            </com.google.android.material.chip.ChipGroup>
+                android:layout_marginTop="10dp"
+                android:gravity="center"
+                android:text="@string/home_voice_example"
+                android:textColor="@color/sonju_text_secondary"
+                android:textSize="17sp" />
 
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/progressCard"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:accessibilityLiveRegion="polite"
+                android:layout_marginTop="24dp"
                 android:visibility="gone"
-                app:cardBackgroundColor="@color/sonju_blue_soft"
-                app:cardCornerRadius="22dp"
+                app:cardBackgroundColor="@color/sonju_surface"
+                app:cardCornerRadius="20dp"
                 app:cardElevation="0dp"
-                tools:visibility="visible">
+                app:strokeColor="@color/sonju_border"
+                app:strokeWidth="1dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -400,22 +108,13 @@
                     android:padding="18dp">
 
                     <TextView
-                        android:id="@+id/progressTitle"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/progress_thinking"
-                        android:textColor="@color/sonju_text"
-                        android:textSize="18sp"
-                        android:textStyle="bold" />
-
-                    <TextView
                         android:id="@+id/progressDetail"
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="5dp"
+                        android:gravity="center"
                         android:text="@string/progress_observe"
-                        android:textColor="@color/sonju_blue"
-                        android:textSize="16sp" />
+                        android:textColor="@color/sonju_text"
+                        android:textSize="17sp" />
 
                     <com.google.android.material.progressindicator.LinearProgressIndicator
                         android:id="@+id/progressIndicator"
@@ -423,23 +122,18 @@
                         android:layout_height="6dp"
                         android:layout_marginTop="14dp"
                         android:indeterminate="true"
-                        app:indicatorColor="@color/sonju_blue"
-                        app:trackColor="@color/white"
-                        app:trackCornerRadius="3dp" />
+                        app:indicatorColor="@color/sonju_green"
+                        app:trackColor="@color/sonju_green_soft" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/stopButton"
-                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        style="@style/Widget.Material3.Button.TextButton"
                         android:layout_width="match_parent"
-                        android:layout_height="54dp"
-                        android:layout_marginTop="14dp"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="6dp"
                         android:text="@string/stop_button"
                         android:textAllCaps="false"
-                        android:textColor="@color/sonju_error"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        app:cornerRadius="17dp"
-                        app:strokeColor="@color/sonju_error" />
+                        android:textColor="@color/sonju_error" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
@@ -447,129 +141,58 @@
                 android:id="@+id/resultCard"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:accessibilityLiveRegion="polite"
+                android:layout_marginTop="24dp"
                 android:visibility="gone"
                 app:cardBackgroundColor="@color/sonju_green_soft"
-                app:cardCornerRadius="22dp"
-                app:cardElevation="0dp"
-                tools:visibility="visible">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="18dp">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/result_title"
-                        android:textColor="@color/sonju_text_secondary"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/resultText"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:lineSpacingExtra="3dp"
-                        android:text="@string/action_completed"
-                        android:textColor="@color/sonju_text"
-                        android:textSize="18sp" />
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/safetyCard"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="28dp"
-                app:cardBackgroundColor="@color/sonju_orange_soft"
-                app:cardCornerRadius="24dp"
+                app:cardCornerRadius="20dp"
                 app:cardElevation="0dp">
 
-                <LinearLayout
+                <TextView
+                    android:id="@+id/resultText"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="20dp">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/safety_title"
-                        android:textColor="@color/sonju_text"
-                        android:textSize="20sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:lineSpacingExtra="4dp"
-                        android:text="@string/safety_description"
-                        android:textColor="@color/sonju_text_secondary"
-                        android:textSize="16sp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/privacyDetailsButton"
-                        style="@style/Widget.Material3.Button.TextButton"
-                        android:layout_width="wrap_content"
-                        android:layout_height="52dp"
-                        android:layout_marginTop="6dp"
-                        android:text="@string/privacy_details"
-                        android:textAllCaps="false"
-                        android:textColor="@color/sonju_warning"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
+                    android:gravity="center"
+                    android:lineSpacingExtra="3dp"
+                    android:padding="20dp"
+                    android:textColor="@color/sonju_text"
+                    android:textSize="18sp"
+                    tools:text="도움말을 준비했어요." />
             </com.google.android.material.card.MaterialCardView>
 
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                app:cardBackgroundColor="@color/sonju_surface"
-                app:cardCornerRadius="24dp"
-                app:cardElevation="0dp"
-                app:strokeColor="@color/sonju_border"
-                app:strokeWidth="1dp">
+            <Space
+                android:layout_width="1dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="20dp">
+            <!-- MainActivity의 기존 실행 상태를 유지하기 위한 비표시 내부 뷰입니다. -->
+            <LinearLayout
+                android:layout_width="1dp"
+                android:layout_height="1dp"
+                android:visibility="gone">
 
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/technology_title"
-                        android:textColor="@color/sonju_text"
-                        android:textSize="20sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:lineSpacingExtra="4dp"
-                        android:text="@string/technology_description"
-                        android:textColor="@color/sonju_text_secondary"
-                        android:textSize="16sp" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:text="@string/powered_by"
-                        android:textColor="@color/sonju_green"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/serviceStatusCard"
+                    android:layout_width="1dp"
+                    android:layout_height="1dp">
+                    <View
+                        android:id="@+id/serviceStatusDot"
+                        android:layout_width="1dp"
+                        android:layout_height="1dp" />
+                </com.google.android.material.card.MaterialCardView>
+                <TextView android:id="@+id/serviceStatusTitle" android:layout_width="1dp" android:layout_height="1dp" />
+                <TextView android:id="@+id/serviceStatusDescription" android:layout_width="1dp" android:layout_height="1dp" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/serviceActionButton" android:layout_width="1dp" android:layout_height="1dp" />
+                <TextView android:id="@+id/wakeWordDescription" android:layout_width="1dp" android:layout_height="1dp" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/wakeWordActionButton" android:layout_width="1dp" android:layout_height="1dp" />
+                <com.google.android.material.textfield.TextInputEditText android:id="@+id/commandInput" android:layout_width="1dp" android:layout_height="1dp" />
+                <TextView android:id="@+id/voiceReviewText" android:layout_width="1dp" android:layout_height="1dp" android:visibility="gone" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/runCommandButton" android:layout_width="1dp" android:layout_height="1dp" />
+                <View android:id="@+id/chipWifi" android:layout_width="1dp" android:layout_height="1dp" />
+                <View android:id="@+id/chipDisplay" android:layout_width="1dp" android:layout_height="1dp" />
+                <View android:id="@+id/chipScroll" android:layout_width="1dp" android:layout_height="1dp" />
+                <View android:id="@+id/chipBack" android:layout_width="1dp" android:layout_height="1dp" />
+                <View android:id="@+id/chipCamera" android:layout_width="1dp" android:layout_height="1dp" />
+            </LinearLayout>
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 </FrameLayout>

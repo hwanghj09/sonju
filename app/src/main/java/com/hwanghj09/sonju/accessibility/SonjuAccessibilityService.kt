@@ -2,12 +2,14 @@ package com.hwanghj09.sonju.accessibility
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
@@ -27,6 +29,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import android.view.Gravity
+import android.view.Display
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
@@ -58,6 +61,7 @@ import com.hwanghj09.sonju.agent.TrustedSettingsRoute
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.agent.UserFeedbackMemory
 import com.hwanghj09.sonju.ai.GeminiPlanner
+import com.hwanghj09.sonju.ai.VisualScreenResult
 import com.hwanghj09.sonju.shopping.BaeminNavigator
 import com.hwanghj09.sonju.shopping.BaeminOrderRequestParser
 import com.hwanghj09.sonju.shopping.BaeminScreenAction
@@ -69,6 +73,12 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 class SonjuAccessibilityService : AccessibilityService() {
+    private data class ScreenshotFrame(
+        val jpegBase64: String,
+        val width: Int,
+        val height: Int,
+    )
+
     data class PendingOverlayContext(
         val snapshot: UiSnapshot,
         val semanticMapJpegBase64: String?,
@@ -135,6 +145,8 @@ class SonjuAccessibilityService : AccessibilityService() {
     private var overlayWindowManager: WindowManager? = null
     private var touchIndicator: View? = null
     private var touchIndicatorGeneration = 0L
+    private var controlGlow: ScreenControlGlowView? = null
+    private var controlGlowWindowManager: WindowManager? = null
     private var voicePanel: View? = null
     private var voicePanelTranscript: TextView? = null
     private var voicePanelRecognizer: SpeechRecognizer? = null
@@ -148,6 +160,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     private var activeFeedbackSnapshot: UiSnapshot? = null
     private var activeFeedbackApproach = ""
     private var overlayCommandGeneration = 0L
+    private var visualFallbackAttemptedGeneration = -1L
     private var overlayCommandExecutionActive = false
     private var proactiveSearchCommand: String? = null
     private var proactiveSearchStepCount = 0
@@ -255,6 +268,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     private fun showQuickVoiceButton() {
         if (quickVoiceButton != null) return
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val shouldStartHidden = rootInActiveWindow?.packageName?.toString() == packageName
         val size = dp(56)
         val displayWidth = resources.displayMetrics.widthPixels
         val displayHeight = resources.displayMetrics.heightPixels
@@ -342,7 +356,22 @@ class SonjuAccessibilityService : AccessibilityService() {
             .onSuccess {
                 overlayWindowManager = windowManager
                 quickVoiceButton = button
+                if (shouldStartHidden) button.visibility = View.GONE
+                button.post(::updateQuickVoiceVisibilityForForegroundApp)
             }
+    }
+
+    private fun updateQuickVoiceVisibilityForForegroundApp() {
+        val foregroundPackage = runCatching {
+            windows.asSequence()
+                .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
+                .mapNotNull { it.root?.packageName?.toString() }
+                .firstOrNull()
+        }.getOrNull().orEmpty()
+        if (foregroundPackage.isBlank()) return
+        val shouldShow = foregroundPackage != packageName && voicePanel == null &&
+            !overlayCommandExecutionActive
+        quickVoiceButton?.visibility = if (shouldShow) View.VISIBLE else View.GONE
     }
 
     private fun hideQuickVoiceButton() {
@@ -350,6 +379,37 @@ class SonjuAccessibilityService : AccessibilityService() {
         quickVoiceButton = null
         runCatching { overlayWindowManager?.removeView(button) }
         overlayWindowManager = null
+    }
+
+    private fun showControlGlow() {
+        if (controlGlow != null) return
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val glow = ScreenControlGlowView(this)
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+        runCatching { windowManager.addView(glow, params) }
+            .onSuccess {
+                controlGlowWindowManager = windowManager
+                controlGlow = glow
+            }
+    }
+
+    private fun hideControlGlow() {
+        val glow = controlGlow ?: return
+        controlGlow = null
+        runCatching { controlGlowWindowManager?.removeView(glow) }
+        controlGlowWindowManager = null
     }
 
     private fun showTouchIndicator(node: AccessibilityNodeInfo) {
@@ -725,19 +785,22 @@ class SonjuAccessibilityService : AccessibilityService() {
         overlayGeminiPlanner.cancelPending()
         showVoicePanelWorking("현재 화면에서 안전한 실행 방법을 확인하고 있어요…")
 
-        BaeminOrderRequestParser.parse(command)?.let { request ->
-            activeFeedbackSnapshot = UiSnapshot.empty().copy(
-                packageName = BaeminNavigator.PACKAGE_NAME,
-            )
-            activeFeedbackApproach = "배민에서 ${request.query} 검색 및 주문 보조"
-            overlayCommandExecutionActive = true
-            showVoicePanelWorking("배민에서 ‘${request.query}’을 찾고 있어요…")
-            val started = startBaeminOrder(request.query)
-            overlayCommandExecutionActive = false
-            if (!started) {
-                deliverScreenExplanation(getString(R.string.baemin_unavailable))
+        val explanationRequest = ScreenExplainer.isExplanationRequest(command)
+        if (!explanationRequest) {
+            BaeminOrderRequestParser.parse(command)?.let { request ->
+                activeFeedbackSnapshot = UiSnapshot.empty().copy(
+                    packageName = BaeminNavigator.PACKAGE_NAME,
+                )
+                activeFeedbackApproach = "배민에서 ${request.query} 검색 및 주문 보조"
+                overlayCommandExecutionActive = true
+                showVoicePanelWorking("배민에서 ‘${request.query}’을 찾고 있어요…")
+                val started = startBaeminOrder(request.query)
+                overlayCommandExecutionActive = false
+                if (!started) {
+                    deliverScreenExplanation(getString(R.string.baemin_unavailable))
+                }
+                return
             }
-            return
         }
 
         val context = if (fromOverlay) consumePendingOverlayContext() else null
@@ -747,7 +810,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         }
         val snapshot = context?.snapshot ?: UiSnapshot.empty()
         activeFeedbackSnapshot = snapshot
-        if (ScreenExplainer.isExplanationRequest(command)) {
+        if (explanationRequest) {
             val appLabel = runCatching {
                 @Suppress("DEPRECATION")
                 packageManager.getApplicationLabel(
@@ -756,6 +819,31 @@ class SonjuAccessibilityService : AccessibilityService() {
             }.getOrDefault(snapshot.windowTitle.orEmpty())
             val browserUrl = ScreenExplainer.detectBrowserUrl(snapshot)
             val fallback = ScreenExplainer.explain(command, appLabel, snapshot, browserUrl)
+            if (ScreenExplainer.needsScreenshotFallback(command, snapshot) &&
+                overlayGeminiPlanner.isConfigured && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+            ) {
+                voicePanelTranscript?.text = "접근성 정보에서 찾지 못해 화면을 보고 확인하고 있어요…"
+                captureScreenshotAsync { frame ->
+                    if (generation != overlayCommandGeneration || voicePanel == null) return@captureScreenshotAsync
+                    if (frame == null) {
+                        deliverScreenExplanation(fallback)
+                        return@captureScreenshotAsync
+                    }
+                    overlayGeminiPlanner.analyzeScreenshotAsync(
+                        command = command,
+                        screenshotJpegBase64 = frame.jpegBase64,
+                        question = true,
+                    ) { result ->
+                        mainHandler.post {
+                            if (generation != overlayCommandGeneration || voicePanel == null) return@post
+                            deliverScreenExplanation(
+                                result.getOrNull()?.explanation?.takeIf(String::isNotBlank) ?: fallback,
+                            )
+                        }
+                    }
+                }
+                return
+            }
             val semanticMap = context?.semanticMapJpegBase64?.takeIf(String::isNotBlank)
             if (semanticMap != null && overlayGeminiPlanner.isConfigured) {
                 voicePanelTranscript?.text = "민감 정보를 뺀 화면 구조로 사용법을 설명하고 있어요…"
@@ -833,6 +921,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         when (assessment.decision) {
             SafetyDecision.BLOCK -> {
                 val hasNoAction = plan.actions.none { it.type != ActionType.FINISH }
+                if (hasNoAction && tryVisualCommandFallback(command)) return
                 if (plan.goal == REMEMBERED_PLAN_GOAL) {
                     overlayTaskMemory.forget(command, snapshot)
                 }
@@ -892,6 +981,52 @@ class SonjuAccessibilityService : AccessibilityService() {
             continueAfterAction = true,
         )
         executeOverlayPlan(command, snapshot, plan)
+        return true
+    }
+
+    private fun tryVisualCommandFallback(command: String): Boolean {
+        val generation = overlayCommandGeneration
+        if (visualFallbackAttemptedGeneration == generation ||
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
+            !overlayGeminiPlanner.isConfigured
+        ) return false
+        visualFallbackAttemptedGeneration = generation
+        voicePanelTranscript?.text = "접근성 정보에서 찾지 못해 화면을 보고 찾고 있어요…"
+        captureScreenshotAsync { frame ->
+            if (generation != overlayCommandGeneration || voicePanel == null) return@captureScreenshotAsync
+            if (frame == null) {
+                deliverScreenExplanation("화면 캡처를 가져오지 못해 요청한 항목을 찾지 못했어요.")
+                return@captureScreenshotAsync
+            }
+            overlayGeminiPlanner.analyzeScreenshotAsync(
+                command = command,
+                screenshotJpegBase64 = frame.jpegBase64,
+                question = false,
+            ) { result ->
+                mainHandler.post {
+                    if (generation != overlayCommandGeneration || voicePanel == null) return@post
+                    val target = result.getOrNull()
+                    if (target == null || !target.found ||
+                        target.xRatio == null || target.yRatio == null
+                    ) {
+                        deliverScreenExplanation(
+                            target?.explanation ?: "화면에서도 요청한 항목을 찾지 못했어요.",
+                        )
+                        return@post
+                    }
+                    dispatchVisualTap(frame, target) { clicked ->
+                        if (generation != overlayCommandGeneration) return@dispatchVisualTap
+                        deliverScreenExplanation(
+                            if (clicked) {
+                                target.explanation.ifBlank { "화면에서 찾은 항목을 눌렀어요." }
+                            } else {
+                                "화면에서 항목을 찾았지만 터치를 전달하지 못했어요."
+                            },
+                        )
+                    }
+                }
+            }
+        }
         return true
     }
 
@@ -1109,6 +1244,14 @@ class SonjuAccessibilityService : AccessibilityService() {
             setOnClickListener { dismissVoicePanel(resumeWakeWord = true) }
         }
         speakExplanation(message)
+        mainHandler.postDelayed(
+            {
+                if (voicePanel === panel && feedbackPromptVisible) {
+                    dismissVoicePanel(resumeWakeWord = true)
+                }
+            },
+            TERMINAL_PANEL_CLOSE_DELAY_MILLIS,
+        )
     }
 
     private fun submitFeedback(positive: Boolean, completed: Boolean) {
@@ -1215,6 +1358,14 @@ class SonjuAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val currentEvent = event ?: return
         val eventPackage = currentEvent.packageName?.toString().orEmpty()
+        val eventClass = currentEvent.className?.toString().orEmpty()
+        if (currentEvent.eventType in setOf(
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED,
+            )
+        ) {
+            updateQuickVoiceVisibilityForForegroundApp()
+        }
         // This is the target-application revision, not a count of Sonju's own overlay events.
         // Keeping overlay churn out lets confirmation UI coexist with strict revision equality,
         // while every observable event from another package invalidates an old executable view.
@@ -1223,7 +1374,6 @@ class SonjuAccessibilityService : AccessibilityService() {
         } else {
             epoch.get()
         }
-        val eventClass = currentEvent.className?.toString().orEmpty()
         val applicationWindowChanged = eventPackage.isNotBlank() && eventPackage != packageName &&
             currentEvent.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             (eventPackage != lastObservedWindowPackage || eventClass != lastObservedWindowClass)
@@ -1375,6 +1525,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         pendingSpeech = null
         dismissVoicePanel(resumeWakeWord = false)
         hideTouchIndicator()
+        hideControlGlow()
         hideQuickVoiceButton()
         mainHandler.removeCallbacksAndMessages(null)
         pendingSnapshotCapture = null
@@ -1591,6 +1742,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         if (activeExecution != null) stopCurrentExecution()
         val generation = ++executionGeneration
         executionActive = true
+        showControlGlow()
         val startedAt = SystemClock.elapsedRealtime()
         var terminalDelivered = false
         val terminalCallback: (ExecutionResult) -> Unit = terminal@{ result ->
@@ -1599,6 +1751,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             if (activeExecution?.generation == generation) activeExecution = null
             if (generation == executionGeneration) {
                 executionActive = false
+                hideControlGlow()
                 invalidateObservedSnapshot()
                 scheduleObservedSnapshotRefresh()
             }
@@ -1647,6 +1800,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         executionGeneration += 1
         executionActive = false
         overlayCommandExecutionActive = false
+        hideControlGlow()
         invalidateOverlayCapture()
         clearProactiveSearch()
         if (baeminOrderSession != null) cancelBaeminOrder()
@@ -1671,6 +1825,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             generation = baeminOrderGeneration,
             startedAtElapsedRealtime = SystemClock.elapsedRealtime(),
         )
+        showControlGlow()
         invalidateObservedSnapshot()
         return runCatching {
             startActivity(intent)
@@ -1700,6 +1855,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     fun cancelBaeminOrder() {
         baeminOrderGeneration += 1
         baeminOrderSession = null
+        if (!executionActive) hideControlGlow()
     }
 
     private fun advanceBaeminOrder(snapshot: UiSnapshot) {
@@ -2326,6 +2482,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         when (action.type) {
             ActionType.CLICK -> {
                 clickNodeAsync(
+                    plan.goal,
                     action,
                     generation,
                 ) { dispatched ->
@@ -2750,7 +2907,175 @@ class SonjuAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun captureScreenshotAsync(callback: (ScreenshotFrame?) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            callback(null)
+            return
+        }
+        val panel = voicePanel
+        val quickButton = quickVoiceButton
+        val glow = controlGlow
+        val panelVisibility = panel?.visibility
+        val quickVisibility = quickButton?.visibility
+        val glowVisibility = glow?.visibility
+        panel?.visibility = View.INVISIBLE
+        quickButton?.visibility = View.INVISIBLE
+        glow?.visibility = View.INVISIBLE
+        fun restoreOverlay() {
+            panelVisibility?.let { panel.visibility = it }
+            quickVisibility?.let { quickButton.visibility = it }
+            glowVisibility?.let { glow.visibility = it }
+        }
+        mainHandler.postDelayed(
+            {
+                runCatching {
+                    takeScreenshot(
+                        Display.DEFAULT_DISPLAY,
+                        mainExecutor,
+                        object : AccessibilityService.TakeScreenshotCallback {
+                            override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
+                                val hardwareBuffer = screenshot.hardwareBuffer
+                                val bitmap = runCatching {
+                                    Bitmap.wrapHardwareBuffer(
+                                        hardwareBuffer,
+                                        screenshot.colorSpace,
+                                    )?.copy(Bitmap.Config.ARGB_8888, false)
+                                }.getOrNull()
+                                hardwareBuffer.close()
+                                val frame = bitmap?.let { source ->
+                                    runCatching {
+                                        val output = ByteArrayOutputStream()
+                                        source.compress(Bitmap.CompressFormat.JPEG, 82, output)
+                                        ScreenshotFrame(
+                                            jpegBase64 = Base64.encodeToString(
+                                                output.toByteArray(),
+                                                Base64.NO_WRAP,
+                                            ),
+                                            width = source.width,
+                                            height = source.height,
+                                        )
+                                    }.getOrNull().also { source.recycle() }
+                                }
+                                restoreOverlay()
+                                callback(frame)
+                            }
+
+                            override fun onFailure(errorCode: Int) {
+                                restoreOverlay()
+                                callback(null)
+                            }
+                        },
+                    )
+                }.onFailure {
+                    restoreOverlay()
+                    callback(null)
+                }
+            },
+            SCREENSHOT_OVERLAY_SETTLE_MILLIS,
+        )
+    }
+
+    private fun clickVisualTargetAsync(
+        command: String,
+        action: AgentAction,
+        generation: Long,
+        callback: (Boolean) -> Unit,
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !overlayGeminiPlanner.isConfigured) {
+            callback(false)
+            return
+        }
+        captureScreenshotAsync { frame ->
+            if (generation != executionGeneration) return@captureScreenshotAsync
+            if (frame == null) {
+                callback(false)
+                return@captureScreenshotAsync
+            }
+            val visualCommand = buildString {
+                append(command)
+                action.target?.takeIf(String::isNotBlank)?.let { append("\n찾을 대상: ").append(it) }
+                action.description.takeIf(String::isNotBlank)
+                    ?.let { append("\n동작: ").append(it) }
+            }
+            overlayGeminiPlanner.analyzeScreenshotAsync(
+                command = visualCommand,
+                screenshotJpegBase64 = frame.jpegBase64,
+                question = false,
+            ) { result ->
+                mainHandler.post {
+                    if (generation != executionGeneration) return@post
+                    val target = result.getOrNull()
+                    if (target == null || !target.found ||
+                        target.xRatio == null || target.yRatio == null
+                    ) {
+                        callback(false)
+                        return@post
+                    }
+                    dispatchVisualTap(frame, target, callback)
+                }
+            }
+        }
+    }
+
+    private fun dispatchVisualTap(
+        frame: ScreenshotFrame,
+        target: VisualScreenResult,
+        callback: (Boolean) -> Unit,
+    ) {
+        val x = (target.xRatio!! * frame.width).toFloat().coerceIn(1f, frame.width - 2f)
+        val y = (target.yRatio!! * frame.height).toFloat().coerceIn(1f, frame.height - 2f)
+        val panel = voicePanel
+        val quickButton = quickVoiceButton
+        val glow = controlGlow
+        val panelVisibility = panel?.visibility
+        val quickVisibility = quickButton?.visibility
+        val glowVisibility = glow?.visibility
+        panel?.visibility = View.INVISIBLE
+        quickButton?.visibility = View.INVISIBLE
+        glow?.visibility = View.INVISIBLE
+        fun restoreOverlay() {
+            panelVisibility?.let { panel.visibility = it }
+            quickVisibility?.let { quickButton.visibility = it }
+            glowVisibility?.let { glow.visibility = it }
+        }
+        mainHandler.postDelayed(
+            {
+                val gesture = GestureDescription.Builder()
+                    .addStroke(
+                        GestureDescription.StrokeDescription(
+                            Path().apply { moveTo(x, y) },
+                            0,
+                            VISUAL_TAP_DURATION_MILLIS,
+                        ),
+                    )
+                    .build()
+                val accepted = dispatchGesture(
+                    gesture,
+                    object : GestureResultCallback() {
+                        override fun onCompleted(gestureDescription: GestureDescription) {
+                            restoreOverlay()
+                            invalidateObservedSnapshot()
+                            callback(true)
+                        }
+
+                        override fun onCancelled(gestureDescription: GestureDescription) {
+                            restoreOverlay()
+                            callback(false)
+                        }
+                    },
+                    mainHandler,
+                )
+                if (!accepted) {
+                    restoreOverlay()
+                    callback(false)
+                }
+            },
+            SCREENSHOT_OVERLAY_SETTLE_MILLIS,
+        )
+    }
+
     private fun clickNodeAsync(
+        command: String,
         action: AgentAction,
         generation: Long,
         callback: (Boolean) -> Unit,
@@ -2763,7 +3088,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             val resolved = SafetyPolicy.resolveClick(action, liveSnapshot)
             val clickable = resolved?.let { nodeAtPath(root, it.clickablePath) }
             if (clickable == null) {
-                callback(false)
+                clickVisualTargetAsync(command, action, generation, callback)
                 return@captureLiveSnapshotAsync
             }
             clearTrustedSettingsContext()
@@ -2851,6 +3176,8 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val STEP_SETTLE_MILLIS = 650L
+        private const val SCREENSHOT_OVERLAY_SETTLE_MILLIS = 120L
+        private const val VISUAL_TAP_DURATION_MILLIS = 80L
         private const val POSTCONDITION_RETRY_MILLIS = 350L
         private const val MAX_POSTCONDITION_OBSERVE_RETRIES = 2
         private const val RETURN_TO_APP_MILLIS = 800L
@@ -2871,6 +3198,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         private const val VOICE_CONTINUATION_GRACE_MILLIS = 2_500L
         private const val OVERLAY_MESSAGE_CLOSE_DELAY_MILLIS = 3_000L
         private const val FEEDBACK_SAVED_CLOSE_DELAY_MILLIS = 1_200L
+        private const val TERMINAL_PANEL_CLOSE_DELAY_MILLIS = 5_000L
         private const val TOUCH_INDICATOR_DURATION_MILLIS = 1_000L
         private const val PROACTIVE_SEARCH_SETTLE_MILLIS = 900L
         private const val MAX_PROACTIVE_SEARCH_STEPS = 10

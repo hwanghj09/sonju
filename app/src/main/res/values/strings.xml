@@ -3,7 +3,7 @@
     <string name="app_tagline">말 한마디로 쉬워지는 스마트폰</string>
     <string name="accessibility_service_label">손주 화면 도우미</string>
     <string name="accessibility_service_description">화면의 버튼과 글자를 구조로 읽고, 사용자가 요청하고 확인한 동작만 대신 수행합니다.</string>
-    <string name="accessibility_service_intro">손주는 사용자가 직접 부탁한 동작만 돕습니다. 송금·비밀번호·인증번호·카드번호·보안 해제는 실행하지 않습니다. 배민 주문 보조는 최종 주문 버튼 전에 주소·메뉴·수량·총액을 다시 확인받습니다. 원본 화면을 캡처하거나 전송하지 않습니다.</string>
+    <string name="accessibility_service_intro">손주는 사용자가 직접 부탁한 동작을 돕습니다. 접근성 구조에서 대상을 찾지 못하면 현재 화면 스크린샷을 캡처해 Gemini로 분석하고, 찾은 화면 좌표를 누를 수 있습니다. 테스트 구성에서는 클릭 안전검사와 배민 최종 확인이 제거되어 있으므로 실제 결제·권한·개인정보 화면에서 사용하지 마세요.</string>
     <string name="service_ready_title">손주가 준비됐어요</string>
     <string name="service_ready_description">화면을 이해하고 안전하게 도울 수 있어요.</string>
     <string name="service_off_title">화면 도우미 연결이 필요해요</string>
@@ -53,6 +53,41 @@
     <string name="command_title">무엇을 도와드릴까요?</string>
     <string name="command_hint">예: 와이파이 설정을 열어 줘</string>
     <string name="voice_button">말하기</string>
+    <string name="voice_button_description">손주에게 말하기 시작</string>
+    <string name="home_voice_example">“이 화면에서 검색 어떻게 해?”</string>
+    <string name="open_privacy_page">개인정보 보호 방식 열기</string>
+    <string name="privacy_page_title">개인정보 보호 방식</string>
+    <string name="privacy_page_intro">손주가 화면과 음성을 어떻게 사용하는지 알려드려요.</string>
+    <string name="privacy_accessibility_title">접근성 정보를 먼저 사용해요</string>
+    <string name="privacy_accessibility_body">화면의 버튼 이름과 위치 구조를 먼저 읽습니다. 접근성으로 찾을 수 있는 항목은 스크린샷 없이 처리합니다.</string>
+    <string name="privacy_screenshot_title">못 찾을 때만 화면을 확인해요</string>
+    <string name="privacy_screenshot_body">접근성에서 대상을 찾지 못하면 원본 스크린샷과 요청 문장을 Gemini에 보내 위치를 찾습니다. secure window에서는 캡처할 수 없습니다.</string>
+    <string name="privacy_voice_title">음성 원본은 손주가 저장하지 않아요</string>
+    <string name="privacy_voice_body">말하기는 휴대폰의 음성 인식 서비스를 사용합니다. 서비스 설정에 따라 음성이 제공자 서버로 전송될 수 있으며 손주는 인식된 문장만 사용합니다.</string>
+    <string name="privacy_storage_title">대화 상태와 백업을 남기지 않아요</string>
+    <string name="privacy_storage_body">Gemini 요청은 store=false로 전송하고 Android 백업을 사용하지 않습니다. 서비스 운영을 위한 제공자의 보안 로그 정책은 별도로 적용될 수 있습니다.</string>
+    <string name="privacy_test_warning">현재 테스트 빌드는 클릭 안전검사와 배민 최종 확인이 제거되어 있습니다. 실제 결제·권한·개인정보 화면에서는 사용하지 마세요.</string>
+    <string name="navigate_back">뒤로 가기</string>
+    <string name="tutorial_step_format">%1$d / %2$d</string>
+    <string name="tutorial_welcome_title">손주와 더 쉬운 스마트폰</string>
+    <string name="tutorial_welcome_body">말 한마디로 화면 사용법을 묻거나 원하는 버튼을 누를 수 있어요.</string>
+    <string name="tutorial_welcome_detail">손주는 접근성 구조를 먼저 사용하고, 찾지 못한 경우에만 현재 화면 스크린샷을 Gemini로 분석합니다.</string>
+    <string name="tutorial_next">다음</string>
+    <string name="tutorial_previous">이전</string>
+    <string name="tutorial_microphone_title">말씀을 들을 수 있게 해주세요</string>
+    <string name="tutorial_microphone_body">말하기 버튼을 사용하려면 마이크 권한이 필요해요.</string>
+    <string name="tutorial_microphone_detail">휴대폰의 음성 인식 서비스를 사용하며 손주는 음성 원본을 저장하지 않습니다.</string>
+    <string name="tutorial_microphone_action">마이크 허용하기</string>
+    <string name="tutorial_microphone_denied">마이크 권한이 거부되었어요. 다시 허용하거나 앱 정보에서 마이크 권한을 켜주세요.</string>
+    <string name="tutorial_accessibility_title">화면 도우미를 연결해주세요</string>
+    <string name="tutorial_accessibility_body">다른 앱의 버튼을 찾고 화면을 설명하려면 손주 화면 도우미를 켜야 해요.</string>
+    <string name="tutorial_accessibility_detail">설정에서 ‘설치된 앱’ 또는 ‘다운로드한 앱’ → ‘손주 화면 도우미’ → ‘사용’을 켜주세요. APK 설치 앱이 차단되면 앱 정보의 오른쪽 위 메뉴에서 ‘제한된 설정 허용’을 먼저 선택하세요.</string>
+    <string name="tutorial_accessibility_action">접근성 설정 열기</string>
+    <string name="tutorial_app_info_action">앱 정보에서 제한 설정 확인</string>
+    <string name="tutorial_ready_title">준비가 끝났어요</string>
+    <string name="tutorial_ready_body">이제 가운데 말하기 버튼을 누르고 편하게 말씀하세요.</string>
+    <string name="tutorial_ready_detail">예: “이 화면에서 검색 어떻게 해?” 또는 “검색 버튼 눌러줘”</string>
+    <string name="tutorial_start">손주 시작하기</string>
     <string name="run_button">손주에게 부탁하기</string>
     <string name="quick_help">이렇게 말해 보세요</string>
     <string name="quick_wifi">와이파이 설정 열기</string>
@@ -74,10 +109,10 @@
     <string name="safety_description">비밀번호·인증번호·카드번호는 읽지 않고 송금은 차단합니다. 배민 주문 보조는 마지막 주문 버튼 전에 주소·메뉴·수량·총액을 꼭 다시 여쭤봅니다.</string>
     <string name="privacy_details">개인정보 보호 방식 보기</string>
     <string name="technology_title">빠르고 알뜰한 화면 이해</string>
-    <string name="technology_description">버튼 이름·위치·상태 구조를 먼저 읽습니다. 구조 신호가 적을 때도 원본 화면 대신 민감값을 제거한 의미 노드 배치도만 만들어 Gemini에 보냅니다.</string>
+    <string name="technology_description">버튼 이름·위치·상태 구조를 먼저 읽고, 접근성으로 대상을 찾지 못하면 원본 화면 스크린샷을 Gemini에 보내 시각적으로 찾습니다.</string>
     <string name="powered_by">Gemini 3.1 Flash-Lite · Neuro-Symbolic Safety</string>
     <string name="privacy_dialog_title">손주가 화면을 이해하는 방법</string>
-    <string name="privacy_dialog_message">손주는 접근성 기능으로 현재 앱 이름, 창 제목, 화면에 보이는 글자와 버튼 이름, 위치와 상태를 읽습니다. 비밀번호·인증 정보로 감지한 항목과 주변 값은 수집 단계에서 가립니다.\n\n간단한 명령은 휴대폰 안의 검토된 규칙으로만 처리합니다. 그 밖의 요청은 사용자의 명령과 위 화면 구조를 Google Gemini API에 일회성으로 전송합니다. 구조 신호가 적은 경우에도 원본 화면을 캡처하지 않고, 이미 가린 의미 노드의 위치와 라벨만 그린 배치도를 보조 입력으로 사용합니다. 전체 트리를 검사하지 못했거나 금융·결제·인증·권한·설치·민감 입력 신호가 있으면 모델 전송과 화면 조작을 중단합니다. Interactions 대화 상태 저장은 store=false로 요청하지만, 이는 Google의 보안·오용 방지 로그 등 서비스 운영상 보존까지 없앤다는 뜻은 아닙니다.\n\n배민 주문 보조는 배민 패키지 안에서만 정해진 규칙으로 검색·첫 일치 결과·기본 옵션·장바구니 버튼을 누릅니다. 이 경로의 화면 구조와 검색어는 Gemini에 보내지 않습니다. 주문·결제 버튼을 만나면 주소·메뉴·수량·총액을 기기에서 보여 주고 사용자가 다시 확정해야 한 번 누릅니다. 비밀번호·PIN·OTP·카드번호·생체인증은 대신 처리하지 않습니다.\n\n손주는 스스로 일을 시작하지 않습니다. 사용자가 직접 요청하면 검토된 로컬 저위험 규칙만 추가 확인 없이 실행하고, Gemini가 만든 모든 계획과 다른 사람에게 영향을 주거나 되돌리기 어려운 행동은 실행 전에 다시 확인합니다. 성공한 저위험 단일 화면 동작은 같은 명령·앱·의미 화면에서 빠르게 재사용하도록 클릭 대상 이름과 목표 상태만 휴대폰에 최대 40개·30일 저장할 수 있습니다. 원본 명령·화면 이미지·전체 화면 구조는 저장하지 않고, 재사용할 때도 현재 화면 revision과 안전 정책을 다시 검사합니다. Android 백업은 사용하지 않으며 일회성 화면 문맥은 실행하거나 2분이 지나면 메모리에서 지웁니다.</string>
+    <string name="privacy_dialog_message">손주는 접근성 기능으로 현재 앱 이름, 창 제목, 화면에 보이는 글자와 버튼 이름, 위치와 상태를 읽습니다. 접근성 구조에서 질문이나 실행 대상을 찾지 못하면 현재 화면의 원본 스크린샷을 캡처해 사용자 요청과 함께 Google Gemini API로 전송합니다. Gemini가 반환한 화면 위치는 설명에 사용하거나 좌표 터치로 실행할 수 있습니다. Android 10 이하 또는 secure window에서는 화면 캡처가 실패할 수 있습니다. Interactions 대화 상태 저장은 store=false로 요청하지만, 이는 Google의 보안·오용 방지 로그 등 서비스 운영상 보존까지 없앤다는 뜻은 아닙니다.\n\n현재 테스트 구성에서는 클릭에 대한 민감·고위험 화면, 중복 대상, revision, 사용자 확인과 실행 후 상태 검사가 제거되어 있습니다. 배민 주문·결제의 최종 확인도 표시하지 않습니다. 따라서 실제 계정, 결제, 권한, 인증, 개인정보 화면에서는 사용하지 마세요.\n\n손주는 스스로 일을 시작하지 않으며 사용자의 음성 요청이 있을 때만 화면을 분석합니다. Android 백업은 사용하지 않습니다.</string>
     <string name="privacy_accept">동의하고 연결하기</string>
     <string name="privacy_not_now">나중에</string>
     <string name="privacy_close">확인했어요</string>

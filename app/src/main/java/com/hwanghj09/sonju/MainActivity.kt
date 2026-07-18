@@ -163,6 +163,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean(
+                OnboardingActivity.KEY_ONBOARDING_COMPLETED,
+                false,
+            )
+        ) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+            finish()
+            return
+        }
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { view, insets ->
@@ -177,10 +186,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         textToSpeech = TextToSpeech(this, this)
         receiveOverlayContext(intent)
 
-        val preferences = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-        if (!preferences.getBoolean(KEY_DISCLOSURE_ACCEPTED, false)) {
-            showPrivacyDisclosure(firstRun = true)
-        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -274,7 +279,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         voiceButton.setOnClickListener {
             val accepted = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
                 .getBoolean(KEY_VOICE_DISCLOSURE_ACCEPTED, false)
-            if (accepted) startVoiceInput() else showVoiceDisclosure(autoExecute = false)
+            if (accepted) startVoiceInput(autoExecute = true)
+            else showVoiceDisclosure(autoExecute = true)
         }
         runCommandButton.setOnClickListener { handleCommand() }
         commandInput.doAfterTextChanged {
@@ -307,7 +313,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             runQuickCommand(getString(R.string.quick_camera))
         }
         findViewById<View>(R.id.privacyDetailsButton).setOnClickListener {
-            showPrivacyDisclosure(firstRun = false)
+            startActivity(Intent(this, PrivacyActivity::class.java))
         }
         findViewById<View>(R.id.stopButton).setOnClickListener { stopCurrentWork() }
     }

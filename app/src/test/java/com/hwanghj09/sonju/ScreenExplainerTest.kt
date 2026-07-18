@@ -16,7 +16,61 @@ class ScreenExplainerTest {
         assertTrue(ScreenExplainer.isExplanationRequest("현재 화면 설명해 줘"))
         assertTrue(ScreenExplainer.isExplanationRequest("이거 카톡 프로필 사진 어떻게 바꿔?"))
         assertTrue(ScreenExplainer.isExplanationRequest("설정 방법을 알려 줘"))
+        assertTrue(ScreenExplainer.isExplanationRequest("이 화면에서 검색 어떻게 해?"))
+        assertTrue(ScreenExplainer.isExplanationRequest("검색 버튼이 어디야?"))
         assertFalse(ScreenExplainer.isExplanationRequest("가족 대화방 눌러 줘"))
+        assertFalse(ScreenExplainer.isExplanationRequest("검색 버튼 눌러줄래?"))
+        assertFalse(ScreenExplainer.isExplanationRequest("이 화면에서 검색해 줘"))
+    }
+
+    @Test
+    fun explainsHowToSearchUsingTheCurrentScreen() {
+        val search = element("검색", false).copy(
+            path = "0.1",
+            contentDescription = "검색",
+            clickable = true,
+            bounds = ScreenBounds(0, 0, 200, 100),
+        )
+        val content = element("최근 항목", false).copy(
+            path = "0.2",
+            bounds = ScreenBounds(0, 100, 200, 600),
+        )
+        val explanation = ScreenExplainer.explain(
+            "이 화면에서 검색 어떻게 해?",
+            "테스트 앱",
+            UiSnapshot(
+                packageName = "com.example.test",
+                windowTitle = "테스트",
+                epoch = 1,
+                elements = listOf(search, content),
+            ),
+        )
+
+        assertTrue(explanation.contains("위쪽"))
+        assertTrue(explanation.contains("‘검색’"))
+        assertTrue(explanation.contains("검색어를 입력"))
+        assertFalse(
+            ScreenExplainer.needsScreenshotFallback("이 화면에서 검색 어떻게 해?", UiSnapshot(
+                packageName = "com.example.test",
+                windowTitle = "테스트",
+                epoch = 1,
+                elements = listOf(search, content),
+            )),
+        )
+    }
+
+    @Test
+    fun requestsScreenshotFallbackWhenSearchIsMissingFromAccessibility() {
+        val snapshot = UiSnapshot(
+            packageName = "com.example.canvas",
+            windowTitle = "Canvas 화면",
+            epoch = 1,
+            elements = listOf(element("화면 내용", false)),
+        )
+
+        assertTrue(
+            ScreenExplainer.needsScreenshotFallback("이 화면에서 검색 어떻게 해?", snapshot),
+        )
     }
 
     @Test

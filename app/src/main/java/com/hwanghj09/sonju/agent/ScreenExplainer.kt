@@ -4,6 +4,8 @@ import java.text.Normalizer
 import java.net.URI
 
 object ScreenExplainer {
+    enum class RequestKind { QUESTION, COMMAND }
+
     private val browserPackages = setOf(
         "com.android.chrome",
         "com.sec.android.app.sbrowser",
@@ -18,22 +20,74 @@ object ScreenExplainer {
         "omnibox",
     )
 
-    fun isExplanationRequest(command: String): Boolean {
+    fun classifyRequest(command: String): RequestKind {
         val normalized = Normalizer.normalize(command, Normalizer.Form.NFKC)
             .lowercase()
             .replace(Regex("\\s+"), "")
-        return normalized.contains("어떻게사용") ||
-            normalized.contains("어떻게바꿔") ||
-            normalized.contains("어떻게변경") ||
-            normalized.contains("어떻게설정") ||
-            normalized.contains("방법알려") ||
-            normalized.contains("방법을알려") ||
-            normalized.contains("단계별로설명") ||
-            normalized.contains("단계별설명") ||
-            normalized.contains("사용법") ||
-            normalized.contains("화면설명") ||
-            normalized.contains("뭐하는앱") ||
-            normalized.contains("무슨앱")
+        val questionSignals = listOf(
+            "어떻게", "방법", "어디", "어느", "어떤", "왜", "뭐야", "뭔가", "무엇",
+            "알려", "설명", "사용법", "할수있", "할수있어", "가능해", "되나요", "돼요",
+            "인가요", "인가", "맞나요", "what", "how", "where", "why", "which",
+        )
+        if (questionSignals.any(normalized::contains)) return RequestKind.QUESTION
+
+        val executionSignals = listOf(
+            "눌러줘", "눌러주세요", "눌러줄래", "클릭해", "열어줘", "열어주세요",
+            "켜줘", "꺼줘", "바꿔줘", "변경해줘", "설정해줘", "검색해줘", "찾아줘",
+            "입력해줘", "보내줘", "실행해줘", "시작해줘", "이동해줘", "내려줘",
+            "올려줘", "뒤로가", "홈으로가", "주문해줘", "tap", "click", "open",
+        )
+        if (executionSignals.any(normalized::contains)) return RequestKind.COMMAND
+        if (listOf(
+                "눌러", "열어", "켜", "꺼", "검색해", "찾아", "입력해", "보내",
+                "실행해", "시작해", "내려", "올려", "주문해",
+            ).any(normalized::endsWith)
+        ) return RequestKind.COMMAND
+
+        val questionEnding = normalized.endsWith("?") || listOf(
+            "니", "나요", "가요", "까요", "거야", "돼", "야",
+        ).any(normalized::endsWith)
+        return if (questionEnding) RequestKind.QUESTION else RequestKind.COMMAND
+    }
+
+    fun isExplanationRequest(command: String): Boolean =
+        classifyRequest(command) == RequestKind.QUESTION
+
+    fun needsScreenshotFallback(command: String, snapshot: UiSnapshot): Boolean {
+        if (!isExplanationRequest(command)) return false
+        val compactCommand = compact(command)
+        if ((compactCommand.contains("카톡") || compactCommand.contains("카카오톡")) &&
+            compactCommand.contains("프로필") && compactCommand.contains("사진")
+        ) return false
+        if (compactCommand.contains("검색") || compactCommand.contains("search")) {
+            return snapshot.elements.none { element ->
+                if (!element.visible || element.sensitive) return@none false
+                val context = compact(
+                    listOfNotNull(
+                        element.text,
+                        element.contentDescription,
+                        element.viewId,
+                    ).joinToString(" "),
+                )
+                context.contains("검색") || context.contains("search") || context.contains("query")
+            }
+        }
+        if (listOf("화면설명", "뭐하는앱", "무슨앱").any(compactCommand::contains)) {
+            return !snapshot.hasSemanticSignal()
+        }
+        val mentionedVisibleElement = snapshot.elements.any { element ->
+            element.visible && !element.sensitive && sequenceOf(
+                element.text,
+                element.contentDescription,
+            ).mapNotNull { it?.takeIf(String::isNotBlank) }
+                .map(::compact)
+                .any { label -> label.length >= 2 && compactCommand.contains(label) }
+        }
+        if (mentionedVisibleElement) return false
+        if (listOf("어떻게", "방법", "어디", "where", "how").any(compactCommand::contains)) {
+            return true
+        }
+        return !snapshot.hasSemanticSignal()
     }
 
     fun isBrowserSurface(snapshot: UiSnapshot): Boolean =
@@ -86,6 +140,7 @@ object ScreenExplainer {
                 "4단계, 사진을 선택하고 완료나 확인을 누르세요. " +
                 "화면 구성이 다르면 현재 보이는 버튼 이름을 말씀해 주세요."
         }
+        taskHelp(command, snapshot)?.let { return it }
         val purpose = when (snapshot.packageName) {
             "com.kakao.talk" -> "대화방을 선택해 메시지를 주고받고 사진이나 파일을 확인하는 앱이에요."
             "com.sampleapp" -> "화면에 보이는 메뉴와 버튼을 선택해 사용하는 앱이에요."
@@ -118,4 +173,74 @@ object ScreenExplainer {
         return "현재 ${appLabel.ifBlank { "이" }} 앱이에요. $purpose $websiteSummary$visibleSummary " +
             "원하는 항목 이름과 함께 눌러 달라고 말씀해 주세요."
     }
+
+    private fun taskHelp(command: String, snapshot: UiSnapshot): String? {
+        val compactCommand = compact(command)
+        val asksAboutSearch = compactCommand.contains("검색") || compactCommand.contains("search")
+        val candidates = snapshot.elements.asSequence()
+            .filter { it.visible && !it.sensitive }
+            .mapNotNull { element ->
+                val label = sequenceOf(element.text, element.contentDescription)
+                    .mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }
+                    .firstOrNull()
+                    ?: element.viewId?.substringAfterLast('/')?.replace('_', ' ')
+                    ?: return@mapNotNull null
+                val compactLabel = compact(label)
+                val matches = if (asksAboutSearch) {
+                    compactLabel.contains("검색") || compactLabel.contains("search") ||
+                        element.viewId.orEmpty().lowercase().let { id ->
+                            id.contains("search") || id.contains("query")
+                        }
+                } else {
+                    compactLabel.length >= 2 && compactCommand.contains(compactLabel)
+                }
+                if (matches) element to label else null
+            }
+            .sortedWith(compareBy({ it.first.bounds.top }, { it.first.bounds.left }))
+            .toList()
+        val (element, rawLabel) = candidates.firstOrNull() ?: if (asksAboutSearch) {
+            return "현재 화면의 접근성 구조에서는 검색 버튼이나 검색창을 찾지 못했어요. " +
+                "돋보기 모양, ‘검색’이라는 글자, 또는 화면 위쪽의 검색창을 찾아 누른 뒤 " +
+                "검색어를 입력해 보세요. 보이는 버튼 이름을 말씀해 주시면 더 정확히 안내할게요."
+        } else {
+            return null
+        }
+        val label = rawLabel.replace(Regex("\\s+"), " ").take(40)
+        val location = locationOf(element, snapshot)
+        return when {
+            element.editable ->
+                "현재 화면 ${location}에 ‘$label’ 입력란이 있어요. 입력란을 한 번 누르고 " +
+                    "찾을 내용을 입력한 다음, 키보드의 검색 또는 돋보기 버튼을 누르세요."
+
+            asksAboutSearch ->
+                "현재 화면 ${location}에 ‘$label’ 항목이 있어요. 그 항목을 누르면 검색 화면이나 " +
+                    "검색 입력란이 열립니다. 검색어를 입력한 뒤 검색 버튼을 누르세요."
+
+            element.clickable ->
+                "현재 화면 ${location}에 ‘$label’ 항목이 있어요. 그 항목을 누른 뒤 나타나는 " +
+                    "안내에 따라 진행하면 됩니다."
+
+            else ->
+                "현재 화면 ${location}에 ‘$label’ 항목이 보여요. 직접 눌리지 않으면 그 항목을 " +
+                    "포함한 주변 행이나 버튼을 눌러 보세요."
+        }
+    }
+
+    private fun locationOf(element: UiElement, snapshot: UiSnapshot): String {
+        val screenBottom = snapshot.elements.asSequence()
+            .filter { it.visible }
+            .maxOfOrNull { it.bounds.bottom }
+            ?.takeIf { it > 0 }
+            ?: return "안"
+        return when {
+            element.bounds.centerY < screenBottom / 3 -> "위쪽"
+            element.bounds.centerY > screenBottom * 2 / 3 -> "아래쪽"
+            else -> "가운데"
+        }
+    }
+
+    private fun compact(value: String): String =
+        Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .lowercase()
+            .replace(Regex("[^\\p{L}\\p{Nd}]"), "")
 }
