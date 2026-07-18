@@ -1,8 +1,18 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
-    <style name="Base.Theme.Sonju" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your light theme here. -->
-        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+<resources>
+    <style name="Base.Theme.Sonju" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/sonju_green</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorPrimaryContainer">@color/sonju_green_soft</item>
+        <item name="colorOnPrimaryContainer">@color/sonju_green_dark</item>
+        <item name="colorSecondary">@color/sonju_orange</item>
+        <item name="colorSurface">@color/sonju_surface</item>
+        <item name="colorOnSurface">@color/sonju_text</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/sonju_background</item>
+        <item name="android:navigationBarColor">@color/sonju_background</item>
+        <item name="android:windowBackground">@color/sonju_background</item>
     </style>
 
     <style name="Theme.Sonju" parent="Base.Theme.Sonju" />

@@ -1,5 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="sonju_background">#F6F3EB</color>
+    <color name="sonju_surface">#FFFFFF</color>
+    <color name="sonju_text">#17251F</color>
+    <color name="sonju_text_secondary">#526159</color>
+    <color name="sonju_green">#155F49</color>
+    <color name="sonju_green_dark">#0B4735</color>
+    <color name="sonju_green_soft">#DDF2E6</color>
+    <color name="sonju_orange">#B34F1C</color>
+    <color name="sonju_orange_soft">#FCE9DD</color>
+    <color name="sonju_blue">#315B83</color>
+    <color name="sonju_blue_soft">#E7F0F8</color>
+    <color name="sonju_border">#7B8E84</color>
+    <color name="sonju_success">#2C7A59</color>
+    <color name="sonju_warning">#A84F20</color>
+    <color name="sonju_error">#B3261E</color>
+    <color name="sonju_disabled">#A7B1AB</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>
