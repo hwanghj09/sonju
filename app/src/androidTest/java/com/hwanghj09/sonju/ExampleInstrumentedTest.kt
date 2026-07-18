@@ -5,6 +5,8 @@ import android.content.ComponentName
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.os.SystemClock
+import androidx.test.core.app.ActivityScenario
 import com.hwanghj09.sonju.accessibility.SonjuAccessibilityService
 import com.hwanghj09.sonju.voice.WakeWordService
 import androidx.test.filters.SdkSuppress
@@ -19,6 +21,26 @@ import org.xmlpull.v1.XmlPullParser
 
 @RunWith(AndroidJUnit4::class)
 class ExampleInstrumentedTest {
+    @Test
+    fun onboardingNextButton_reEnablesAfterPageTransition() {
+        ActivityScenario.launch(OnboardingActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val next = activity.findViewById<com.google.android.material.button.MaterialButton>(
+                    R.id.tutorialPrimaryButton,
+                )
+                assertTrue(next.isEnabled)
+                next.performClick()
+            }
+            SystemClock.sleep(300L)
+            scenario.onActivity { activity ->
+                val next = activity.findViewById<com.google.android.material.button.MaterialButton>(
+                    R.id.tutorialPrimaryButton,
+                )
+                assertTrue(next.isEnabled)
+            }
+        }
+    }
+
     @Test
     fun applicationSecurityFlags_areFailClosed() {
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext

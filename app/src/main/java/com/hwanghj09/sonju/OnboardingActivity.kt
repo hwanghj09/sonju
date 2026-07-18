@@ -86,6 +86,8 @@ class OnboardingActivity : AppCompatActivity() {
 
     private fun renderPage() {
         stepText.text = getString(R.string.tutorial_step_format, page + 1, TOTAL_PAGES)
+        primaryButton.isEnabled = true
+        appInfoButton.isEnabled = true
         secondaryButton.visibility = View.VISIBLE
         secondaryButton.isEnabled = page > 0
         secondaryButton.setOnClickListener {
