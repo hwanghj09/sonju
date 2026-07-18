@@ -121,7 +121,7 @@ internal object AppTaskMemoryPolicy {
             !plan.continueAfterAction &&
             effectiveActions.size == 1 &&
             plan.actions.all { it.type in reusableActions } &&
-            plan.actions.none { it.type == ActionType.VISUAL_CLICK || it.type == ActionType.SET_TEXT }
+            plan.actions.none { it.type == ActionType.SET_TEXT }
     }
 
     fun cacheKey(command: String, snapshot: UiSnapshot): String {

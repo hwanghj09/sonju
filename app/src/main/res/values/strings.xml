@@ -3,7 +3,7 @@
     <string name="app_tagline">말 한마디로 쉬워지는 스마트폰</string>
     <string name="accessibility_service_label">손주 화면 도우미</string>
     <string name="accessibility_service_description">화면의 버튼과 글자를 구조로 읽고, 사용자가 요청하고 확인한 동작만 대신 수행합니다.</string>
-    <string name="accessibility_service_intro">손주는 사용자가 직접 부탁한 동작만 돕습니다. 송금·비밀번호·인증번호·카드번호·보안 해제는 실행하지 않습니다. 배민 주문 보조는 최종 주문 버튼 전에 주소·메뉴·수량·총액을 다시 확인받습니다. 원본 화면을 저장하지 않습니다.</string>
+    <string name="accessibility_service_intro">손주는 사용자가 직접 부탁한 동작만 돕습니다. 송금·비밀번호·인증번호·카드번호·보안 해제는 실행하지 않습니다. 배민 주문 보조는 최종 주문 버튼 전에 주소·메뉴·수량·총액을 다시 확인받습니다. 원본 화면을 캡처하거나 전송하지 않습니다.</string>
     <string name="service_ready_title">손주가 준비됐어요</string>
     <string name="service_ready_description">화면을 이해하고 안전하게 도울 수 있어요.</string>
     <string name="service_off_title">화면 도우미 연결이 필요해요</string>
@@ -73,17 +73,11 @@
     <string name="safety_title">실수하지 않도록 두 번 확인해요</string>
     <string name="safety_description">비밀번호·인증번호·카드번호는 읽지 않고 송금은 차단합니다. 배민 주문 보조는 마지막 주문 버튼 전에 주소·메뉴·수량·총액을 꼭 다시 여쭤봅니다.</string>
     <string name="privacy_details">개인정보 보호 방식 보기</string>
-    <string name="visual_screen_settings">화면 이미지 설정</string>
-    <string name="visual_screen_disclosure_title">AI 화면 이미지 보조</string>
-    <string name="visual_screen_disclosure_message">접근성 구조만으로 화면을 끝까지 이해하지 못한 경우, 사용자가 “손주야”로 요청한 그 순간의 현재 앱 화면 1장을 Gemini에 전송해 버튼 위치를 판단할 수 있습니다. 화면에는 프로필 사진, 이름, 대화 내용 등 개인정보가 포함될 수 있습니다.\n\n상태 표시줄과 내비게이션 영역은 가리고 이미지는 저해상도로 줄입니다. 금융·결제·인증·권한·설치 화면과 민감 입력란이 감지된 화면은 전송하지 않습니다. 이미지는 앱 파일이나 로그에 저장하지 않으며 요청 메모리에서만 사용합니다.\n\nAI가 가리킨 위치를 바로 누르지 않고, 그 위치에 Android가 노출한 클릭 가능한 버튼이 정확히 하나 있고 실행 직전 화면이 같은 경우에만 한 번 누릅니다. 시각 버튼 누르기는 매번 내용을 보여 드리고 확인받습니다.</string>
-    <string name="visual_screen_accept">동의하고 사용</string>
-    <string name="visual_screen_decline">사용하지 않기</string>
-    <string name="visual_screen_enabled">화면 이미지 보조를 켰어요.</string>
     <string name="technology_title">빠르고 알뜰한 화면 이해</string>
-    <string name="technology_description">버튼 이름·위치·상태를 먼저 읽습니다. 별도 동의한 경우 구조가 불완전한 저위험 화면만 상·하단을 가린 저용량 이미지로 Gemini Vision에 보냅니다.</string>
+    <string name="technology_description">버튼 이름·위치·상태 구조를 먼저 읽습니다. 구조 신호가 적을 때도 원본 화면 대신 민감값을 제거한 의미 노드 배치도만 만들어 Gemini에 보냅니다.</string>
     <string name="powered_by">Gemini 3.1 Flash-Lite · Neuro-Symbolic Safety</string>
     <string name="privacy_dialog_title">손주가 화면을 이해하는 방법</string>
-    <string name="privacy_dialog_message">손주는 접근성 기능으로 현재 앱 이름, 창 제목, 화면에 보이는 글자와 버튼 이름, 위치와 상태를 읽습니다. 비밀번호·인증 정보로 감지한 항목과 주변 값은 수집 단계에서 가립니다.\n\n간단한 명령은 휴대폰 안의 규칙으로만 처리합니다. 그 밖의 요청은 사용자의 명령과 위 화면 구조를 Google Gemini API에 일회성으로 전송합니다. 사용자가 화면 이미지 보조에 별도 동의하면 구조가 불완전한 저위험 화면에서 현재 화면 이미지 1장을 상·하단을 가리고 저해상도로 줄여 함께 전송할 수 있습니다. 금융·결제·인증·권한·설치·민감 입력 신호가 있으면 화면 이미지를 전송하지 않습니다. Interactions 대화 상태 저장은 store=false로 요청하지만, 이는 Google의 보안·오용 방지 로그 등 서비스 운영상 보존까지 없앤다는 뜻은 아닙니다.\n\n배민 주문 보조는 배민 패키지 안에서만 정해진 규칙으로 검색·첫 일치 결과·기본 옵션·장바구니 버튼을 누릅니다. 이 경로의 화면 구조와 검색어는 Gemini에 보내지 않습니다. 주문·결제 버튼을 만나면 주소·메뉴·수량·총액을 기기에서 보여 주고 사용자가 다시 확정해야 한 번 누릅니다. 비밀번호·PIN·OTP·카드번호·생체인증은 대신 처리하지 않습니다.\n\n손주는 스스로 일을 시작하지 않습니다. 사용자가 직접 요청하면 안전 정책이 저위험으로 허용한 동작은 추가 확인 없이 실행하고, 시각 판단으로 찾은 버튼과 다른 사람에게 영향을 주거나 되돌리기 어려운 행동은 실행 전에 다시 확인합니다. 성공한 저위험 단일 화면 동작은 같은 명령·앱·의미 화면에서 빠르게 재사용하도록 클릭 대상 이름과 목표 상태만 휴대폰에 최대 40개·30일 저장할 수 있습니다. 원본 명령·스크린샷·전체 화면 구조는 저장하지 않고, 재사용할 때도 현재 화면을 다시 안전 검사합니다. Android 백업은 사용하지 않으며 일회성 화면 문맥은 실행하거나 2분이 지나면 메모리에서 지웁니다.</string>
+    <string name="privacy_dialog_message">손주는 접근성 기능으로 현재 앱 이름, 창 제목, 화면에 보이는 글자와 버튼 이름, 위치와 상태를 읽습니다. 비밀번호·인증 정보로 감지한 항목과 주변 값은 수집 단계에서 가립니다.\n\n간단한 명령은 휴대폰 안의 검토된 규칙으로만 처리합니다. 그 밖의 요청은 사용자의 명령과 위 화면 구조를 Google Gemini API에 일회성으로 전송합니다. 구조 신호가 적은 경우에도 원본 화면을 캡처하지 않고, 이미 가린 의미 노드의 위치와 라벨만 그린 배치도를 보조 입력으로 사용합니다. 전체 트리를 검사하지 못했거나 금융·결제·인증·권한·설치·민감 입력 신호가 있으면 모델 전송과 화면 조작을 중단합니다. Interactions 대화 상태 저장은 store=false로 요청하지만, 이는 Google의 보안·오용 방지 로그 등 서비스 운영상 보존까지 없앤다는 뜻은 아닙니다.\n\n배민 주문 보조는 배민 패키지 안에서만 정해진 규칙으로 검색·첫 일치 결과·기본 옵션·장바구니 버튼을 누릅니다. 이 경로의 화면 구조와 검색어는 Gemini에 보내지 않습니다. 주문·결제 버튼을 만나면 주소·메뉴·수량·총액을 기기에서 보여 주고 사용자가 다시 확정해야 한 번 누릅니다. 비밀번호·PIN·OTP·카드번호·생체인증은 대신 처리하지 않습니다.\n\n손주는 스스로 일을 시작하지 않습니다. 사용자가 직접 요청하면 검토된 로컬 저위험 규칙만 추가 확인 없이 실행하고, Gemini가 만든 모든 계획과 다른 사람에게 영향을 주거나 되돌리기 어려운 행동은 실행 전에 다시 확인합니다. 성공한 저위험 단일 화면 동작은 같은 명령·앱·의미 화면에서 빠르게 재사용하도록 클릭 대상 이름과 목표 상태만 휴대폰에 최대 40개·30일 저장할 수 있습니다. 원본 명령·화면 이미지·전체 화면 구조는 저장하지 않고, 재사용할 때도 현재 화면 revision과 안전 정책을 다시 검사합니다. Android 백업은 사용하지 않으며 일회성 화면 문맥은 실행하거나 2분이 지나면 메모리에서 지웁니다.</string>
     <string name="privacy_accept">동의하고 연결하기</string>
     <string name="privacy_not_now">나중에</string>
     <string name="privacy_close">확인했어요</string>

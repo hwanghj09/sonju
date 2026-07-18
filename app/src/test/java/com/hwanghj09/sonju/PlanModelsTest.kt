@@ -16,6 +16,8 @@ class PlanModelsTest {
         val trusted = raw.copy(trustedSettingsRoute = TrustedSettingsRoute.WIFI)
 
         assertNotEquals(raw.screenFingerprint(), trusted.screenFingerprint())
+        assertTrue(raw.hasSameObservableContentAs(trusted))
+        assertFalse(raw.hasSameRevisionAs(trusted))
     }
 
     @Test
@@ -59,6 +61,20 @@ class PlanModelsTest {
         )
 
         assertNotEquals(original.screenFingerprint(), toggled.screenFingerprint())
+    }
+
+    @Test
+    fun revisionComparisonRejectsAbaAndSemanticScreenChange() {
+        val expected = snapshotWith(lastText = "확인").copy(windowId = 7, epoch = 10)
+        val exactRevision = expected.copy()
+        val sameContentAfterTargetAppEvents = expected.copy(epoch = 99)
+        val changedScreen = snapshotWith(lastText = "삭제").copy(windowId = 7, epoch = 99)
+        val otherWindow = expected.copy(windowId = 8, epoch = 99)
+
+        assertTrue(expected.hasSameRevisionAs(exactRevision))
+        assertFalse(expected.hasSameRevisionAs(sameContentAfterTargetAppEvents))
+        assertFalse(expected.hasSameRevisionAs(changedScreen))
+        assertFalse(expected.hasSameRevisionAs(otherWindow))
     }
 
     @Test

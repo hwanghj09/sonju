@@ -107,6 +107,7 @@ object UiTreeReader {
         return UiSnapshot(
             packageName = root.packageName?.toString().orEmpty().ifBlank { "unknown" },
             windowTitle = if (sensitiveWindow) "[민감 화면]" else rawWindowTitle,
+            windowId = root.windowId,
             epoch = epoch,
             elements = elements,
             treeTruncated = traversal.truncated,

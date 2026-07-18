@@ -1,21 +1,31 @@
 # Sonju 남은 검증·배포 과제
 
-최종 갱신: 2026-07-18
+최종 갱신: 2026-07-19
+
+## 클릭 안전검사 제거 상태
+
+현재 코드는 테스트 요청에 따라 클릭의 사전 정책, 사용자 확인, 민감·고위험 화면, 중복 후보, revision/fingerprint, node 상태 및 사후조건 검사를 제거한 상태입니다. 배민 최종 주문 확인창도 제거되어 첫 일치 후보를 즉시 클릭합니다. 아래에 기록된 기존 클릭 안전성 설명과 검증 결과는 이 변경 이전의 이력이며 현재 동작을 보증하지 않습니다. 현재 계약은 `docs/SAFETY_CONTRACT.md`를 기준으로 합니다.
 
 이 문서는 현재 프로토타입을 다음 작업자가 과장 없이 이어받기 위한 인수인계 문서입니다. 아래 항목은 코드에 남겨 둔 `TODO`가 아니라, 실제 Android 기기·Gemini 운영 환경·Google Play 정책까지 포함한 남은 검증 및 출시 과제입니다.
 
 ## 현재 확정된 상태
 
-- Android debug APK 컴파일·조립·에뮬레이터 재설치가 성공했습니다.
-- ASCII 임시 경로의 깨끗한 복사본에서 `testDebugUnitTest`, `lintDebug`, `assembleDebug`가 모두 성공했습니다. 단위 테스트는 76개, 실패·오류·건너뜀은 0개였습니다.
+- Android debug APK와 AndroidTest APK 컴파일·조립이 성공했고 삼성 SM-S721N(Android 16)에 설치해 계측 테스트를 실행했습니다.
+- 최신 소스에서 캐시를 쓰지 않고 모든 task를 강제 재실행한 `testDebugUnitTest`, `lintDebug`, `assembleDebug`, `assembleDebugAndroidTest`가 성공했습니다. 단위 테스트는 108개, 실패·오류·건너뜀은 0개이며 Lint 오류는 0개입니다.
 - 최종 APK는 `apksigner`의 APK Signature Scheme v2 검증을 통과했고, package `com.hwanghj09.sonju`, minSdk 28, targetSdk 36, 앱 라벨 `손주`를 확인했습니다.
-- 접근성 서비스의 사용자 고지와 수동 활성화, 플로팅 `손` 버튼, 큰 글씨 홈 화면, 로컬 설정 열기 계획까지 에뮬레이터에서 확인했습니다.
-- 최종 비동기 화면 캡처 리팩터링 후 `compileDebugKotlin`과 `compileDebugUnitTestKotlin`은 성공했습니다.
+- SM-S721N에서 백업·평문 통신 차단, 접근성 서비스 비공개/BIND 권한, screenshot·gesture capability 부재, 마이크 foreground service type을 검사하는 계측 테스트 3개가 모두 통과했습니다.
+- 접근성 서비스의 사용자 고지와 수동 활성화, 플로팅 `손` 버튼, 큰 글씨 홈 화면, 로컬 설정 열기 계획까지 기존 에뮬레이터 검증 기록이 있습니다.
+- 비동기 의미 트리 캡처와 revision 검증 리팩터링 후 `compileDebugKotlin`과 `compileDebugUnitTestKotlin`은 성공했습니다.
 - 화면 전체 의미 트리 순회는 단일 백그라운드 executor에서 처리합니다. 메인 스레드는 최종 node path와 상태를 짧게 재검증한 뒤 Android 접근성 동작만 전달합니다.
 - 설정 경로 신뢰값은 캐시에서 그대로 재사용하지 않습니다. 현재 살아 있는 공식 Settings Intent 경로, Activity, 첫 화면 제목이 모두 일치할 때만 다시 붙이고, 만료·이탈 시 제거합니다.
 - 실행 중 놓친 접근성 이벤트 때문에 이전 토글 상태가 재사용되지 않도록 실행 종료 뒤 캐시를 무효화하고 새 스냅샷을 비동기로 요청합니다.
-- 비동기 검증 중 중단·서비스 interrupt가 발생해도 실행 completion을 정확히 한 번 전달하고, UI가 진행 상태에 남지 않도록 했습니다. 중단 시 진행 중 오버레이 캡처와 대기 문맥도 함께 폐기합니다.
+- 비동기 검증 중 중단·서비스 interrupt가 발생해도 실행 completion을 정확히 한 번 전달하고, UI가 진행 상태에 남지 않도록 했습니다. 중단 시 진행 중 구조 캡처와 대기 문맥도 generation으로 무효화합니다.
 - worker/Binder 지연 뒤에도 클릭·스크롤 직전 45초 실행 상한을 다시 검사합니다.
+- 모든 실행 동작은 dispatch 접수 뒤 화면을 다시 읽어 action별 목적 package·Settings 경로·구조 변화 또는 요청한 최종 상태를 확인해야 완료 처리하며, 후조건이 보이지 않아도 실제 행동을 자동 재시도하지 않습니다.
+- 대상 앱 이벤트만 증가시키는 단조 revision과 전체 semantic fingerprint를 함께 검사해 A→B→A 화면 복귀도 이전 확인으로 실행하지 않습니다. 모델의 `goal_completed`는 완료 후보 안내일 뿐 성공 판정이나 학습 근거로 사용하지 않습니다.
+- 배민 경로도 각 단계의 epoch·단일 후보·민감 화면·검색 text/장바구니 상태 후조건을 재검증하고, dispatch 또는 후조건 실패 시 같은 부작용을 자동 재시도하지 않습니다.
+- 원본 화면 screenshot 권한·캡처·Gemini 좌표 schema·좌표 실행 경로를 제거했습니다. 구조 신호가 적은 안전 화면은 마스킹된 의미 노드 배치도만 보조 입력으로 사용합니다.
+- display ID·window transform·occlusion을 완전히 증명할 수 없는 좌표 gesture fallback과 `canPerformGestures` capability도 제거했습니다. 클릭은 검증된 의미 노드의 `ACTION_CLICK`만 사용합니다.
 - 공식 Settings 경로가 확립된 뒤 손주와 Settings가 아닌 다른 앱/Home으로 이탈하면 신뢰 경로를 즉시 폐기합니다.
 - 진단용 화면 트리·제목 로그는 소스에서 제거했습니다.
 
@@ -60,7 +70,8 @@ Windows의 상위 경로에 한글이 있어 Gradle 테스트 worker가 간헐�
 
 ```powershell
 $env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
-.\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon
+.\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
+.\gradlew.bat :app:connectedDebugAndroidTest --no-daemon
 ```
 
 추가 확인:
@@ -73,7 +84,7 @@ git ls-files local.properties
 
 첫 명령은 모두 성공해야 하고, 두 번째 묶음은 공백 오류·진단 로그·추적된 `local.properties`가 없음을 보여야 합니다.
 
-2026-07-18 최종 실행에서는 위 Gradle 세 작업과 `git diff --check`가 성공했고, 진단 로그·로컬 키 노출 파일·추적된 `local.properties`가 없었습니다. 이 명령은 다음 코드 변경 후 다시 실행해야 합니다.
+2026-07-19 최종 실행에서는 위 빌드·단위·Lint 작업, SM-S721N 계측 테스트 3개와 `git diff --check`가 성공했고, 진단 로그·추적된 `local.properties`가 없었습니다. Debug APK는 v2 서명 검증을 통과했으며 package `com.hwanghj09.sonju`, minSdk 28, targetSdk 36, 앱 라벨 `손주`를 다시 확인했습니다. 이 명령은 다음 코드 변경 후 다시 실행해야 합니다.
 
 ## Android 플랫폼상 남는 기능 한계
 

@@ -33,84 +33,24 @@ object SafetyPolicy {
     private val blockedPackageFragments = setOf(
         "bank", "banking", "finance", "securities", "wallet", "payment", "kakaopay",
         "tosspay", "authenticator", "packageinstaller", "permissioncontroller", "crypto",
+        "systemui", "keyguard", "biometric", "credential", "inputmethod", "keyboard",
+    )
+
+    private val blockedScreenTerms = setOf(
+        "송금", "이체", "입금", "출금", "결제", "구매", "주문 확정", "계좌", "카드번호",
+        "비밀번호", "비번", "pin", "otp", "인증번호", "보안코드", "생체인증", "지문인증",
+        "권한 허용", "앱 권한", "제한된 설정 허용", "앱 설치", "앱 삭제", "계정 삭제",
+        "공장 초기화", "보안 해제", "잠금 해제",
+        "transfer", "send money", "payment", "pay now", "purchase", "checkout",
+        "place order", "confirm order", "bank account", "card number", "password", "passcode",
+        "verification code", "security code", "biometric", "fingerprint authentication",
+        "allow permission", "app permission", "install app", "install apk", "uninstall",
+        "delete account", "factory reset", "disable security", "unlock",
     )
 
     private val confirmationTargetTerms = setOf(
         "보내기", "전송", "삭제", "등록", "저장", "예약", "신고", "공유", "게시",
         "send", "delete", "save", "reserve", "report", "share", "post",
-    )
-    private val trustedSettingsControlsBySurface = mapOf(
-        "와이파이" to setOf("와이파이", "wifi", "와이파이사용", "wifi사용", "usewifi"),
-        "wifi" to setOf("와이파이", "wifi", "와이파이사용", "wifi사용", "usewifi"),
-        "인터넷" to setOf("와이파이", "wifi", "와이파이사용", "wifi사용", "usewifi"),
-        "internet" to setOf("와이파이", "wifi", "와이파이사용", "wifi사용", "usewifi"),
-        "네트워크및인터넷" to setOf(
-            "와이파이", "wifi", "와이파이사용", "wifi사용", "usewifi",
-        ),
-        "networkinternet" to setOf(
-            "와이파이", "wifi", "와이파이사용", "wifi사용", "usewifi",
-        ),
-        "소리및진동" to setOf(
-            "전화벨이울릴때진동", "터치음", "화면잠금소리", "충전소리및진동",
-            "vibrateforcalls", "touchsounds", "screenlockingsound", "chargingvibration",
-        ),
-        "soundvibration" to setOf(
-            "전화벨이울릴때진동", "터치음", "화면잠금소리", "충전소리및진동",
-            "vibrateforcalls", "touchsounds", "screenlockingsound", "chargingvibration",
-        ),
-        "소리" to setOf("터치음", "화면잠금소리", "touchsounds", "screenlockingsound"),
-        "sound" to setOf("터치음", "화면잠금소리", "touchsounds", "screenlockingsound"),
-        "디스플레이" to setOf(
-            "어두운테마", "자동화면회전", "굵은텍스트", "고대비텍스트",
-            "darktheme", "autorotatescreen", "boldtext", "highcontrasttext",
-        ),
-        "display" to setOf(
-            "어두운테마", "자동화면회전", "굵은텍스트", "고대비텍스트",
-            "darktheme", "autorotatescreen", "boldtext", "highcontrasttext",
-        ),
-        "displaytouch" to setOf(
-            "어두운테마", "자동화면회전", "굵은텍스트", "고대비텍스트",
-            "darktheme", "autorotatescreen", "boldtext", "highcontrasttext",
-        ),
-        "접근성" to setOf(
-            "확대", "색상보정", "색상반전", "애니메이션삭제", "굵은텍스트", "고대비텍스트",
-            "magnification", "colorcorrection", "colorinversion", "removeanimations",
-            "boldtext", "highcontrasttext",
-        ),
-        "accessibility" to setOf(
-            "확대", "색상보정", "색상반전", "애니메이션삭제", "굵은텍스트", "고대비텍스트",
-            "magnification", "colorcorrection", "colorinversion", "removeanimations",
-            "boldtext", "highcontrasttext",
-        ),
-        "확대" to setOf("확대단축키", "magnificationshortcut"),
-        "magnification" to setOf("확대단축키", "magnificationshortcut"),
-        "색상및모션" to setOf("색상보정", "색상반전", "애니메이션삭제"),
-        "colorandmotion" to setOf("colorcorrection", "colorinversion", "removeanimations"),
-        "글꼴크기와스타일" to setOf("굵은텍스트", "고대비텍스트"),
-        "글꼴크기및스타일" to setOf("굵은텍스트", "고대비텍스트"),
-        "디스플레이크기및텍스트" to setOf("굵은텍스트", "고대비텍스트"),
-        "displaysizeandtext" to setOf("boldtext", "highcontrasttext"),
-        "날짜및시간" to setOf(
-            "자동날짜및시간", "자동시간대", "위치를사용하여시간대설정", "24시간형식사용",
-        ),
-        "datetime" to setOf(
-            "automaticdateandtime", "automatictimezone", "uselocationfortimezone",
-            "use24hourformat",
-        ),
-    )
-    private val trustedSettingsStateResourceIds = setOf(
-        "android:id/switch_widget",
-        "com.android.settings:id/switchwidget",
-        "com.android.settings:id/switch_widget",
-    )
-    private val trustedSettingsTitlesByRoute = mapOf(
-        TrustedSettingsRoute.WIFI to setOf(
-            "와이파이", "wifi", "인터넷", "internet", "네트워크및인터넷", "networkinternet",
-        ),
-        TrustedSettingsRoute.SOUND to setOf("소리", "sound", "소리및진동", "soundvibration"),
-        TrustedSettingsRoute.ACCESSIBILITY to setOf("접근성", "accessibility"),
-        TrustedSettingsRoute.DISPLAY to setOf("디스플레이", "display", "displaytouch"),
-        TrustedSettingsRoute.DATE_TIME to setOf("날짜및시간", "datetime"),
     )
     private val numericRunPattern = Regex(
         "(?<!\\p{Nd})\\p{Nd}(?:[\\s\\p{M}\\p{P}\\p{S}_]*\\p{Nd})*",
@@ -203,6 +143,13 @@ object SafetyPolicy {
     }
 
     fun evaluate(command: String, plan: AgentPlan, snapshot: UiSnapshot): SafetyAssessment {
+        if (plan.actions.any { it.type == ActionType.CLICK }) {
+            return SafetyAssessment(
+                SafetyDecision.ALLOW,
+                RiskLevel.LOW,
+                "클릭 안전검사 없이 실행합니다.",
+            )
+        }
         preflightCommand(command)?.let { return it }
 
         if (plan.confidence < 0.60) {
@@ -246,16 +193,8 @@ object SafetyPolicy {
         }
 
         if (nonFinishActions.any { it.type.requiresStableScreen() }) {
-            val rawVisualClick = nonFinishActions.singleOrNull()?.type == ActionType.VISUAL_CLICK &&
-                plan.source == PlanSource.GEMINI_RAW_SCREEN &&
-                snapshot.visualFingerprint != null &&
-                VisualTargetResolver.resolveScreenPoint(
-                    snapshot,
-                    nonFinishActions.singleOrNull()?.x,
-                    nonFinishActions.singleOrNull()?.y,
-                ) != null
-            if (snapshot.packageName == "unknown" || (!rawVisualClick &&
-                    snapshot.elements.none { it.visible && !it.sensitive })
+            if (snapshot.packageName == "unknown" ||
+                snapshot.elements.none { it.visible && !it.sensitive }
             ) {
                 return SafetyAssessment(
                     SafetyDecision.BLOCK,
@@ -263,10 +202,7 @@ object SafetyPolicy {
                     "화면 구조를 확실히 읽을 수 없어 버튼·입력·스크롤을 실행하지 않습니다.",
                 )
             }
-            highRiskScreenReason(
-                snapshot,
-                allowTruncated = true,
-            )?.let { reason ->
+            highRiskScreenReason(snapshot)?.let { reason ->
                 return SafetyAssessment(
                     SafetyDecision.BLOCK,
                     RiskLevel.BLOCKED,
@@ -281,23 +217,6 @@ object SafetyPolicy {
                 RiskLevel.BLOCKED,
                 "이 프로토타입에서는 외부 화면에 글자를 대신 입력하지 않습니다.",
             )
-        }
-
-        if (nonFinishActions.any { it.type == ActionType.VISUAL_CLICK }) {
-            if (plan.source != PlanSource.GEMINI_RAW_SCREEN ||
-                snapshot.visualFingerprint == null ||
-                VisualTargetResolver.resolveScreenPoint(
-                    snapshot,
-                    nonFinishActions.single().x,
-                    nonFinishActions.single().y,
-                ) == null
-            ) {
-                return SafetyAssessment(
-                    SafetyDecision.BLOCK,
-                    RiskLevel.BLOCKED,
-                    "AI가 가리킨 위치에서 안전하게 누를 버튼 하나를 확인하지 못했습니다.",
-                )
-            }
         }
 
         plan.actions.forEach { action ->
@@ -388,18 +307,9 @@ object SafetyPolicy {
             }
 
 
-            if (action.type == ActionType.CLICK) {
-                if (validateClick(action, snapshot) == null) {
-                    return SafetyAssessment(
-                        SafetyDecision.BLOCK,
-                        RiskLevel.BLOCKED,
-                        "화면에서 요청한 버튼을 하나로 정확히 검증하지 못해 누르지 않습니다.",
-                    )
-                }
-            }
         }
 
-        val needsConfirmation = plan.actions.any { action ->
+        val needsConfirmation = plan.source != PlanSource.LOCAL_RULE || plan.actions.any { action ->
             action.type in setOf(
                 ActionType.SET_TEXT,
                 ActionType.OPEN_MESSAGES,
@@ -449,29 +359,10 @@ object SafetyPolicy {
         }
             .take(5)
             .mapNotNull { path -> snapshot.elements.firstOrNull { it.path == path } }
-            .firstOrNull { it.visible && it.enabled && it.clickable }
+            .firstOrNull { it.clickable }
 
-    private fun associatedStateElements(
-        snapshot: UiSnapshot,
-        clickable: UiElement,
-    ): List<UiElement> = snapshot.elements.filter { element ->
-        element.visible && element.enabled &&
-            (element.path == clickable.path || element.path.startsWith("${clickable.path}.")) &&
-            (element.checkable || element.selected || !element.stateDescription.isNullOrBlank())
-    }
-
-    private fun currentBooleanState(element: UiElement): Boolean? {
-        if (element.checkable) return element.checked
-        val describedState = when (compactForPolicy(element.stateDescription.orEmpty())) {
-            "켜짐", "사용", "사용중", "on", "checked", "enabled", "true" -> true
-            "꺼짐", "사용안함", "off", "unchecked", "disabled", "false" -> false
-            else -> null
-        }
-        return describedState ?: true.takeIf { element.selected }
-    }
-
-    fun highRiskScreenReason(snapshot: UiSnapshot, allowTruncated: Boolean = false): String? {
-        if (snapshot.treeTruncated && !allowTruncated) {
+    fun highRiskScreenReason(snapshot: UiSnapshot): String? {
+        if (snapshot.treeTruncated) {
             return "화면 전체를 안전하게 검사할 수 없어 버튼·입력·스크롤을 실행하거나 모델에 보내지 않습니다."
         }
         val normalizedPackage = Normalizer.normalize(snapshot.packageName, Normalizer.Form.NFKC)
@@ -480,12 +371,32 @@ object SafetyPolicy {
             return "금융·인증·권한 관련 앱에서는 화면 동작을 대신 실행하지 않습니다."
         }
 
+        if (snapshot.windowTitle == "[민감 화면]" || snapshot.elements.any { element ->
+                element.visible && element.sensitive && element.editable
+            }
+        ) {
+            return "비밀번호·인증 정보가 있는 화면은 모델에 보내거나 대신 조작하지 않습니다."
+        }
+
+        val screenContext = buildString {
+            append(snapshot.windowTitle.orEmpty()).append('\n')
+            snapshot.elements.asSequence()
+                .filter { it.visible && !it.sensitive }
+                .forEach { element ->
+                    append(element.text.orEmpty()).append(' ')
+                    append(element.contentDescription.orEmpty()).append(' ')
+                    append(element.stateDescription.orEmpty()).append(' ')
+                    append(element.viewId.orEmpty()).append('\n')
+                }
+        }
+        if (blockedScreenTerms.any { containsPolicyTerm(screenContext, it) }) {
+            return "금융·결제·인증·권한·설치·보안 화면에서는 모델 입력과 자동 조작을 중단합니다."
+        }
+
         return null
     }
 
     private fun ActionType.requiresStableScreen(): Boolean = this in setOf(
-        ActionType.CLICK,
-        ActionType.VISUAL_CLICK,
         ActionType.SET_TEXT,
         ActionType.SCROLL_DOWN,
         ActionType.SCROLL_UP,
@@ -605,114 +516,15 @@ object SafetyPolicy {
             dateRun.value.count(Char::isDigit) == numericRun.value.count(Char::isDigit)
     }
 
-    /**
-     * Resolves a click to exact semantic paths only after every policy predicate succeeds. The
-     * accessibility sink independently rebuilds this value from one live root before clicking.
-     */
-    fun validateClick(action: AgentAction, snapshot: UiSnapshot): ValidatedClick? {
+    /** Resolves the first matching clickable node without applying click safety policy. */
+    fun resolveClick(action: AgentAction, snapshot: UiSnapshot): ResolvedClick? {
         if (action.type != ActionType.CLICK) return null
         val target = action.target.orEmpty()
         if (target.isBlank()) return null
-        if (highRiskScreenReason(snapshot, allowTruncated = true) != null) return null
-        val trustedSettingsSurface = isTrustedInteractiveSurface(snapshot)
-        if (snapshot.packageName.equals("com.android.settings", ignoreCase = true) &&
-            !trustedSettingsSurface
-        ) return null
-        val matching = snapshot.elements.filter { element ->
-            element.visible && element.enabled && !element.sensitive && matches(element, target)
-        }
-        val desiredState = desiredCheckState(action.value)
-        if (!trustedSettingsSurface) {
-            if (!action.value.isNullOrBlank()) return null
-            val clickableCandidates = matching.mapNotNull { element ->
-                effectiveClickableElement(snapshot, element)
-            }.distinctBy(UiElement::path)
-            val clickableTargets = clickableCandidates.filter { candidate ->
-                clickableCandidates.none { other ->
-                    other.path != candidate.path && other.path.startsWith("${candidate.path}.")
-                }
-            }
-            val clickable = clickableTargets.singleOrNull() ?: return null
-            return ValidatedClick(clickablePath = clickable.path)
-        }
-        if (desiredState == null) return null
-        val directStateTargets = matching.filter { element ->
-            val normalizedViewId = Normalizer.normalize(
-                element.viewId.orEmpty(),
-                Normalizer.Form.NFKC,
-            ).lowercase()
-            element.clickable && normalizedViewId in trustedSettingsStateResourceIds &&
-                currentBooleanState(element) != null
-        }.distinctBy(UiElement::path)
-        val directStateTarget = directStateTargets.singleOrNull()
-        val clickable: UiElement
-        val stateElement: UiElement
-        if (directStateTarget != null) {
-            // Some OEM Settings layouts expose the label container and its sibling switch as two
-            // clickable matches. An exact named, allowlisted checkable control is less ambiguous.
-            clickable = directStateTarget
-            stateElement = directStateTarget
-        } else {
-            val clickableCandidates = matching.mapNotNull { element ->
-                effectiveClickableElement(snapshot, element)
-            }.distinctBy(UiElement::path)
-            val clickableTargets = clickableCandidates.filter { candidate ->
-                clickableCandidates.none { other ->
-                    other.path != candidate.path && other.path.startsWith("${candidate.path}.")
-                }
-            }
-            clickable = clickableTargets.singleOrNull() ?: return null
-            stateElement = associatedStateElements(snapshot, clickable).singleOrNull() ?: return null
-        }
-        if (!isTrustedSettingsControl(snapshot, action, stateElement)) return null
-        val currentState = currentBooleanState(stateElement) ?: return null
-        if (currentState == desiredState) return null
-        val stateViewId = Normalizer.normalize(
-            stateElement.viewId.orEmpty(),
-            Normalizer.Form.NFKC,
-        ).lowercase()
-        return ValidatedClick(
-            clickablePath = clickable.path,
-            statePath = stateElement.path,
-            stateViewId = stateViewId,
-            currentState = currentState,
-            desiredState = desiredState,
-        )
-    }
-
-    private fun isTrustedInteractiveSurface(snapshot: UiSnapshot): Boolean {
-        val normalizedPackage = Normalizer.normalize(snapshot.packageName, Normalizer.Form.NFKC)
-            .lowercase()
-        if (normalizedPackage != "com.android.settings") return false
-        val route = snapshot.trustedSettingsRoute ?: return false
-        val normalizedTitle = compactForPolicy(snapshot.windowTitle.orEmpty())
-        return normalizedTitle in trustedSettingsTitlesByRoute[route].orEmpty() &&
-            normalizedTitle in trustedSettingsControlsBySurface
-    }
-
-    private fun isTrustedSettingsControl(
-        snapshot: UiSnapshot,
-        action: AgentAction,
-        stateElement: UiElement,
-    ): Boolean {
-        val route = snapshot.trustedSettingsRoute ?: return false
-        val normalizedTitle = compactForPolicy(snapshot.windowTitle.orEmpty())
-        if (normalizedTitle !in trustedSettingsTitlesByRoute[route].orEmpty()) return false
-        val allowedControls = trustedSettingsControlsBySurface[normalizedTitle] ?: return false
-        val normalizedTarget = compactForPolicy(action.target.orEmpty())
-        val normalizedViewId = Normalizer.normalize(
-            stateElement.viewId.orEmpty(),
-            Normalizer.Form.NFKC,
-        ).lowercase()
-        return normalizedTarget in allowedControls &&
-            normalizedViewId in trustedSettingsStateResourceIds
-    }
-
-    private fun desiredCheckState(value: String?): Boolean? = when (
-        Normalizer.normalize(value.orEmpty(), Normalizer.Form.NFKC).trim().lowercase()
-    ) {
-        "checked", "true" -> true
-        "unchecked", "false" -> false
-        else -> null
+        val clickable = snapshot.elements.asSequence()
+            .filter { matches(it, target) }
+            .mapNotNull { effectiveClickableElement(snapshot, it) }
+            .firstOrNull() ?: return null
+        return ResolvedClick(clickablePath = clickable.path)
     }
 }

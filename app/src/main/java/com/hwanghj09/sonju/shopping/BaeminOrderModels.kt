@@ -39,10 +39,6 @@ sealed interface BaeminScreenAction {
 object BaeminNavigator {
     const val PACKAGE_NAME = "com.sampleapp"
 
-    private val credentialTerms = setOf(
-        "비밀번호", "비번", "pin", "otp", "인증번호", "보안코드", "cvc", "cvv",
-        "카드번호", "카드 번호", "생체인증", "지문인증",
-    )
     private val finalActionTerms = listOf(
         "결제하기", "주문하기", "결제 및 주문", "주문 및 결제", "주문 확정", "결제",
     )
@@ -57,20 +53,14 @@ object BaeminNavigator {
         query: String,
         stepCount: Int,
         itemAdded: Boolean = false,
+        completionBaseline: List<String>? = null,
     ): BaeminScreenAction {
         if (snapshot.packageName != PACKAGE_NAME) return BaeminScreenAction.Wait
-        if (snapshot.treeTruncated) {
-            return BaeminScreenAction.Stop("화면 구조가 너무 커서 주문 보조를 안전하게 계속할 수 없어요.")
+        val currentCompletionState = completionState(snapshot)
+        if (currentCompletionState.isNotEmpty()) {
+            return BaeminScreenAction.Complete
         }
-        val visibleText = snapshot.elements.asSequence()
-            .filter { it.visible && !it.sensitive }
-            .flatMap { sequenceOf(it.text.orEmpty(), it.contentDescription.orEmpty()) }
-            .joinToString(" ")
-            .lowercase()
-        credentialTerms.firstOrNull { visibleText.contains(it) }?.let {
-            return BaeminScreenAction.Stop("비밀번호·인증·카드 정보 화면에서는 자동 조작을 중단합니다.")
-        }
-        if (completionTerms.any(visibleText::contains)) return BaeminScreenAction.Complete
+        if (completionBaseline != null) return BaeminScreenAction.Wait
 
         findClickable(snapshot, finalActionTerms)?.let { (path, label) ->
             return BaeminScreenAction.Click(path, label, finalCommit = true)
@@ -113,29 +103,46 @@ object BaeminNavigator {
         )
     }
 
-    fun reviewSummary(snapshot: UiSnapshot, actionLabel: String): String {
-        val importantTerms = listOf(
-            "총", "결제", "주문금액", "배달팁", "할인", "주소", "배달주소", "원",
-        )
-        val lines = snapshot.elements.asSequence()
-            .filter { it.visible && !it.sensitive }
-            .flatMap { sequenceOf(it.text.orEmpty(), it.contentDescription.orEmpty()) }
-            .map(String::trim)
-            .filter { value -> value.isNotBlank() && importantTerms.any(value::contains) }
-            .distinct()
-            .take(10)
-            .toList()
-        return buildString {
-            appendLine("누르려는 버튼: $actionLabel")
-            if (lines.isNotEmpty()) {
-                appendLine()
-                appendLine("현재 주문 화면에서 확인된 내용:")
-                lines.forEach { appendLine("• ${it.take(100)}") }
-            }
-            appendLine()
-            append("주소·메뉴·수량·총액·결제수단이 맞을 때만 최종 확정해 주세요.")
-        }
+    /** The add step is complete only when cart-related semantic state actually changed. */
+    fun itemAddedPostcondition(before: UiSnapshot, after: UiSnapshot): Boolean {
+        if (before.packageName != PACKAGE_NAME || after.packageName != PACKAGE_NAME) return false
+        val beforeState = cartState(before)
+        val afterState = cartState(after)
+        return afterState.isNotEmpty() && beforeState != afterState
     }
+
+    fun completionState(snapshot: UiSnapshot): List<String> = snapshot.elements.asSequence()
+        .filter { it.visible && !it.sensitive }
+        .mapNotNull { element ->
+            val value = listOfNotNull(element.text, element.contentDescription)
+                .joinToString(" ")
+                .trim()
+            value.takeIf { text -> completionTerms.any(text.lowercase()::contains) }
+                ?.let { text -> "${element.path}|$text" }
+        }
+        .sorted()
+        .toList()
+
+    private fun cartState(snapshot: UiSnapshot): List<String> = snapshot.elements.asSequence()
+        .filter { it.visible && !it.sensitive }
+        .mapNotNull { element ->
+            val text = listOfNotNull(
+                element.text,
+                element.contentDescription,
+                element.stateDescription,
+            ).joinToString(" ").trim()
+            text.takeIf { value -> cartTerms.any { term -> compact(value).contains(compact(term)) } }
+                ?.let { value ->
+                    listOf(
+                        element.path,
+                        value,
+                        element.checked,
+                        element.selected,
+                    ).joinToString("|")
+                }
+        }
+        .sorted()
+        .toList()
 
     private fun findClickable(
         snapshot: UiSnapshot,
@@ -143,7 +150,6 @@ object BaeminNavigator {
         allowAffixes: Boolean = true,
     ): Pair<String, String>? {
         val matches = snapshot.elements.asSequence()
-            .filter { it.visible && it.enabled && !it.sensitive }
             .mapNotNull { element ->
                 val label = sequenceOf(element.text, element.contentDescription)
                     .filterNotNull()
@@ -171,7 +177,7 @@ object BaeminNavigator {
         val compactQuery = compact(query)
         if (compactQuery.isBlank()) return null
         return snapshot.elements.asSequence()
-            .filter { it.visible && it.enabled && !it.sensitive && !it.editable }
+            .filter { !it.editable }
             .mapNotNull { element ->
                 val label = sequenceOf(element.text, element.contentDescription)
                     .filterNotNull()
@@ -191,7 +197,7 @@ object BaeminNavigator {
         return generateSequence(element.path) { path ->
             path.substringBeforeLast('.', missingDelimiterValue = "").takeIf(String::isNotBlank)
         }.drop(1).take(6)
-            .firstOrNull { path -> pathElement(snapshot, path)?.let { it.visible && it.enabled && it.clickable } == true }
+            .firstOrNull { path -> pathElement(snapshot, path)?.clickable == true }
     }
 
     private fun pathElement(snapshot: UiSnapshot, path: String): UiElement? =

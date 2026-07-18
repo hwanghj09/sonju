@@ -37,7 +37,7 @@ class AppTaskMemoryTest {
     fun onlySingleLowRiskStructureActionIsReusable() {
         val safePlan = plan(ActionType.SCROLL_DOWN)
         assertTrue(AppTaskMemoryPolicy.isReusable(snapshot(), safePlan))
-        assertFalse(AppTaskMemoryPolicy.isReusable(snapshot(), plan(ActionType.VISUAL_CLICK)))
+        assertFalse(AppTaskMemoryPolicy.isReusable(snapshot(), plan(ActionType.SET_TEXT)))
         assertFalse(
             AppTaskMemoryPolicy.isReusable(
                 snapshot(),

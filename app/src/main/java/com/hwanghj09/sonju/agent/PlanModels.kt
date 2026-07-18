@@ -13,7 +13,6 @@ enum class ActionType {
     OPEN_DIALER,
     OPEN_MESSAGES,
     CLICK,
-    VISUAL_CLICK,
     SET_TEXT,
     SCROLL_DOWN,
     SCROLL_UP,
@@ -40,8 +39,7 @@ enum class TrustedSettingsRoute {
 enum class PlanSource {
     LOCAL_RULE,
     GEMINI_STRUCTURE,
-    GEMINI_VISION,
-    GEMINI_RAW_SCREEN,
+    GEMINI_SEMANTIC_MAP,
 }
 
 enum class RiskLevel {
@@ -107,13 +105,11 @@ data class UiElement(
 data class UiSnapshot(
     val packageName: String,
     val windowTitle: String?,
+    val windowId: Int = -1,
     val epoch: Long,
     val elements: List<UiElement>,
     val treeTruncated: Boolean = false,
     val trustedSettingsRoute: TrustedSettingsRoute? = null,
-    val visualFingerprint: String? = null,
-    val visualScreenWidth: Int = 0,
-    val visualScreenHeight: Int = 0,
 ) {
     fun hasSemanticSignal(): Boolean =
         elements.count { element ->
@@ -153,6 +149,7 @@ data class UiSnapshot(
     fun screenFingerprint(): String {
         val canonical = buildString {
             append(packageName).append('|').append(windowTitle.orEmpty()).append('|')
+                .append(windowId).append('|')
                 .append(treeTruncated).append('|').append(trustedSettingsRoute?.name.orEmpty())
                 .append('\n')
             elements.asSequence()
@@ -182,6 +179,25 @@ data class UiSnapshot(
             .joinToString("") { byte -> "%02x".format(byte) }
     }
 
+    fun hasSameContentAs(other: UiSnapshot): Boolean =
+        packageName != "unknown" && other.packageName != "unknown" &&
+            screenFingerprint() == other.screenFingerprint()
+
+    /** Content comparison for postconditions; capability provenance is not a visible UI change. */
+    fun hasSameObservableContentAs(other: UiSnapshot): Boolean =
+        packageName != "unknown" && other.packageName != "unknown" &&
+            copy(trustedSettingsRoute = null).screenFingerprint() ==
+            other.copy(trustedSettingsRoute = null).screenFingerprint()
+
+    /**
+     * Exact executable revision used at the final action sink. [epoch] is a monotonic revision of
+     * non-Sonju application accessibility events; the service deliberately excludes its own
+     * confirmation overlay events. Requiring both values prevents an A -> B -> A ABA transition
+     * from becoming executable merely because the semantic content returned to the old shape.
+     */
+    fun hasSameRevisionAs(other: UiSnapshot): Boolean =
+        epoch == other.epoch && hasSameContentAs(other)
+
     companion object {
         fun empty(epoch: Long = System.currentTimeMillis()) = UiSnapshot(
             packageName = "unknown",
@@ -192,14 +208,7 @@ data class UiSnapshot(
     }
 }
 
-/** Exact, deterministic click identity produced by [SafetyPolicy] and rechecked at the sink. */
-data class ValidatedClick(
-    val clickablePath: String,
-    val statePath: String? = null,
-    val stateViewId: String? = null,
-    val currentState: Boolean? = null,
-    val desiredState: Boolean? = null,
-)
+data class ResolvedClick(val clickablePath: String)
 
 data class AgentAction(
     val type: ActionType,
@@ -207,8 +216,6 @@ data class AgentAction(
     val target: String? = null,
     val value: String? = null,
     val waitMillis: Long = 0,
-    val x: Int? = null,
-    val y: Int? = null,
 )
 
 data class AgentPlan(
@@ -251,7 +258,6 @@ fun ActionType.displayName(): String = when (this) {
     ActionType.OPEN_DIALER -> "전화 화면 열기"
     ActionType.OPEN_MESSAGES -> "문자 화면 열기"
     ActionType.CLICK -> "버튼 누르기"
-    ActionType.VISUAL_CLICK -> "화면에서 확인한 버튼 누르기"
     ActionType.SET_TEXT -> "글자 입력하기"
     ActionType.SCROLL_DOWN -> "화면 아래로 내리기"
     ActionType.SCROLL_UP -> "화면 위로 올리기"

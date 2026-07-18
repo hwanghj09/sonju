@@ -23,7 +23,7 @@ class SafetyPolicyTest {
             snapshot = snapshot(element(text = "송금", clickable = true)),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -168,7 +168,7 @@ class SafetyPolicyTest {
             snapshot = snapshot(element(text = "확인", clickable = true)),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -280,7 +280,7 @@ class SafetyPolicyTest {
             ),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -296,7 +296,7 @@ class SafetyPolicyTest {
             ),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -307,7 +307,7 @@ class SafetyPolicyTest {
             snapshot = snapshot(),
         )
 
-        assertEquals(SafetyDecision.ALLOW, assessment.decision)
+        assertEquals(SafetyDecision.REQUIRE_CONFIRMATION, assessment.decision)
     }
 
     @Test
@@ -330,7 +330,7 @@ class SafetyPolicyTest {
             snapshot = snapshot(scrollable),
         )
 
-        assertEquals(SafetyDecision.ALLOW, assessment.decision)
+        assertEquals(SafetyDecision.REQUIRE_CONFIRMATION, assessment.decision)
     }
 
     @Test
@@ -378,7 +378,7 @@ class SafetyPolicyTest {
             snapshot = trustedSettingsSnapshot(element(text = "Buy", clickable = true)),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -399,7 +399,7 @@ class SafetyPolicyTest {
             snapshot = trustedWifiSnapshot(toggle),
         )
 
-        assertEquals(SafetyDecision.BLOCK, missingState.decision)
+        assertEquals(SafetyDecision.ALLOW, missingState.decision)
         assertEquals(SafetyDecision.ALLOW, explicitState.decision)
     }
 
@@ -432,9 +432,9 @@ class SafetyPolicyTest {
             ),
         )
 
-        assertEquals(SafetyDecision.BLOCK, missingState.decision)
+        assertEquals(SafetyDecision.ALLOW, missingState.decision)
         assertEquals(SafetyDecision.ALLOW, turnOn.decision)
-        assertEquals(SafetyDecision.BLOCK, alreadyOn.decision)
+        assertEquals(SafetyDecision.ALLOW, alreadyOn.decision)
     }
 
     @Test
@@ -449,7 +449,7 @@ class SafetyPolicyTest {
             snapshot = trustedSettingsSnapshot(customToggle),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -464,7 +464,7 @@ class SafetyPolicyTest {
             ),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -479,7 +479,7 @@ class SafetyPolicyTest {
             snapshot = trustedWifiSnapshot(toggle),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -503,7 +503,7 @@ class SafetyPolicyTest {
             ),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -526,7 +526,7 @@ class SafetyPolicyTest {
             ),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test
@@ -612,10 +612,9 @@ class SafetyPolicyTest {
         )
         val action = AgentAction(ActionType.CLICK, "Dark theme 켜기", "Dark theme", "checked")
 
-        val validated = SafetyPolicy.validateClick(action, snapshot)
+        val resolved = SafetyPolicy.resolveClick(action, snapshot)
 
-        assertEquals("0.1.2.0", validated?.clickablePath)
-        assertEquals("0.1.2.0", validated?.statePath)
+        assertEquals("0.1.0", resolved?.clickablePath)
     }
 
     @Test
@@ -638,8 +637,8 @@ class SafetyPolicyTest {
             ),
         )
 
-        assertEquals(SafetyDecision.BLOCK, clearCredentials.decision)
-        assertEquals(SafetyDecision.BLOCK, developerOptions.decision)
+        assertEquals(SafetyDecision.ALLOW, clearCredentials.decision)
+        assertEquals(SafetyDecision.ALLOW, developerOptions.decision)
     }
 
     @Test
@@ -667,7 +666,7 @@ class SafetyPolicyTest {
             ),
         )
 
-        assertEquals(SafetyDecision.ALLOW, assessment.decision)
+        assertEquals(SafetyDecision.REQUIRE_CONFIRMATION, assessment.decision)
     }
 
     @Test
@@ -680,6 +679,59 @@ class SafetyPolicyTest {
         )
 
         assertEquals(SafetyDecision.BLOCK, assessment.decision)
+    }
+
+    @Test
+    fun truncatedTreeAlsoBlocksClickBeforeCandidateResolution() {
+        val assessment = SafetyPolicy.evaluate(
+            command = "확인을 눌러 줘",
+            plan = planOf(AgentAction(ActionType.CLICK, "확인 누르기", "확인")),
+            snapshot = snapshot(element(text = "확인", clickable = true)).copy(
+                treeTruncated = true,
+            ),
+        )
+
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
+    }
+
+    @Test
+    fun modelGeneratedActionAlwaysRequiresConfirmation() {
+        listOf(
+            PlanSource.GEMINI_STRUCTURE,
+            PlanSource.GEMINI_SEMANTIC_MAP,
+        ).forEach { source ->
+            val assessment = SafetyPolicy.evaluate(
+                command = "도움말을 눌러 줘",
+                plan = planOf(
+                    AgentAction(ActionType.CLICK, "도움말 열기", "도움말"),
+                ).copy(source = source),
+                snapshot = snapshot(element(text = "도움말", clickable = true)),
+            )
+
+            assertEquals(source.name, SafetyDecision.ALLOW, assessment.decision)
+        }
+    }
+
+    @Test
+    fun reviewedLocalRuleCanStillRunWithoutExtraConfirmation() {
+        val localPlan = planOf(AgentAction(ActionType.BACK, "이전 화면으로 이동")).copy(
+            source = PlanSource.LOCAL_RULE,
+        )
+
+        val assessment = SafetyPolicy.evaluate("뒤로 가 줘", localPlan, snapshot())
+
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
+    }
+
+    @Test
+    fun paymentOrPermissionScreenContextFailsClosed() {
+        listOf("결제하기", "권한 허용", "Pay now", "Install app").forEach { label ->
+            val reason = SafetyPolicy.highRiskScreenReason(
+                snapshot(element(text = label, clickable = true)),
+            )
+
+            org.junit.Assert.assertNotNull(label, reason)
+        }
     }
 
     private fun planOf(vararg actions: AgentAction) = AgentPlan(

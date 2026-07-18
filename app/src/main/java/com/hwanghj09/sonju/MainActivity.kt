@@ -81,8 +81,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var ttsReady = false
     private var fromOverlay = false
     private var externalSnapshot: UiSnapshot? = null
-    private var externalVisionSemanticMap: String? = null
-    private var externalRawScreenshot = false
+    private var externalSemanticMapJpegBase64: String? = null
     private var externalContextCapturedAtElapsedRealtime = 0L
     private var externalContextSessionId = 0L
     private val contextExpiryHandler = Handler(Looper.getMainLooper())
@@ -181,8 +180,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val preferences = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
         if (!preferences.getBoolean(KEY_DISCLOSURE_ACCEPTED, false)) {
             showPrivacyDisclosure(firstRun = true)
-        } else if (!preferences.contains(KEY_VISUAL_SCREEN_CONSENT)) {
-            showVisualScreenDisclosure()
         }
     }
 
@@ -348,8 +345,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         fromOverlay = true
         externalSnapshot = context.snapshot
-        externalVisionSemanticMap = context.visionSemanticMap
-        externalRawScreenshot = context.rawScreenshot
+        externalSemanticMapJpegBase64 = context.semanticMapJpegBase64
         externalContextCapturedAtElapsedRealtime = context.capturedAtElapsedRealtime
         externalContextSessionId = context.sessionId
         scheduleOverlayContextExpiry(context.sessionId, context.capturedAtElapsedRealtime)
@@ -627,22 +623,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         val snapshot = externalSnapshot ?: UiSnapshot.empty()
         externalSnapshot = null
-        val preRenderedSemanticMap = externalVisionSemanticMap
-        externalVisionSemanticMap = null
-        val rawScreenshot = externalRawScreenshot
-        externalRawScreenshot = false
+        val preRenderedSemanticMap = externalSemanticMapJpegBase64
+        externalSemanticMapJpegBase64 = null
 
-        val localPlan = RuleBasedPlanner.plan(command, snapshot)
-        if (localPlan != null) {
-            showProgress(getString(R.string.progress_check))
-            handlePlan(command, snapshot, localPlan)
-            return
-        }
-
-        SafetyPolicy.highRiskScreenReason(
-            snapshot,
-            allowTruncated = true,
-        )?.let { reason ->
+        SafetyPolicy.highRiskScreenReason(snapshot)?.let { reason ->
             showBlocked(
                 SafetyAssessment(
                     decision = SafetyDecision.BLOCK,
@@ -650,6 +634,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     reason = reason,
                 ),
             )
+            return
+        }
+
+        val localPlan = RuleBasedPlanner.plan(command, snapshot)
+        if (localPlan != null) {
+            showProgress(getString(R.string.progress_check))
+            handlePlan(command, snapshot, localPlan)
             return
         }
 
@@ -666,16 +657,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         showProgress(getString(R.string.progress_plan))
         if (preRenderedSemanticMap != null) {
-            progressDetail.text = if (rawScreenshot) {
-                "현재 화면 이미지에서 안전한 버튼 하나를 확인하고 있어요"
-            } else {
-                "민감 정보를 뺀 버튼 배치도를 한 번 더 확인하고 있어요"
-            }
+            progressDetail.text = "민감 정보를 뺀 버튼 배치도를 한 번 더 확인하고 있어요"
             requestGeminiPlan(
                 command,
                 snapshot,
                 preRenderedSemanticMap,
-                rawScreenshot,
                 generation,
             )
         } else {
@@ -683,7 +669,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 command,
                 snapshot,
                 semanticMap = null,
-                rawScreenshot = false,
                 generation,
             )
         }
@@ -693,10 +678,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         command: String,
         snapshot: UiSnapshot,
         semanticMap: String?,
-        rawScreenshot: Boolean,
         generation: Long,
     ) {
-        geminiPlanner.planAsync(command, snapshot, semanticMap, rawScreenshot) { result ->
+        geminiPlanner.planAsync(command, snapshot, semanticMap) { result ->
             runOnUiThread {
                 if (generation != requestGeneration || isFinishing || isDestroyed) return@runOnUiThread
                 result.fold(
@@ -715,8 +699,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun handlePlan(command: String, snapshot: UiSnapshot, plan: AgentPlan) {
         if (plan.goalCompleted && plan.actions.none { it.type != ActionType.FINISH }) {
-            val message = "완료됐어요. ${plan.summary.ifBlank { "요청한 화면에 도착했어요." }}"
-            finishBusyWithMessage(message, success = true)
+            val message = "요청한 화면의 후보를 찾았어요. " +
+                "${plan.summary.ifBlank { "현재 화면을 직접 확인해 주세요." }} " +
+                "모델 판단만으로 완료 처리하지 않았습니다."
+            finishBusyWithMessage(message, success = false)
             speak(message)
             return
         }
@@ -882,33 +868,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     showAccessibilityGuide()
                 }
         } else {
-            builder
-                .setNeutralButton(R.string.visual_screen_settings) { _, _ ->
-                    showVisualScreenDisclosure()
-                }
-                .setPositiveButton(R.string.privacy_close, null)
+            builder.setPositiveButton(R.string.privacy_close, null)
         }
         builder.show()
-    }
-
-    private fun showVisualScreenDisclosure() {
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.visual_screen_disclosure_title)
-            .setMessage(R.string.visual_screen_disclosure_message)
-            .setNegativeButton(R.string.visual_screen_decline) { _, _ ->
-                getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-                    .edit()
-                    .putBoolean(KEY_VISUAL_SCREEN_CONSENT, false)
-                    .apply()
-            }
-            .setPositiveButton(R.string.visual_screen_accept) { _, _ ->
-                getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-                    .edit()
-                    .putBoolean(KEY_VISUAL_SCREEN_CONSENT, true)
-                    .apply()
-                showToast(getString(R.string.visual_screen_enabled))
-            }
-            .show()
     }
 
     private fun openAccessibilitySettings() {
@@ -1024,8 +986,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         contextExpiryRunnable = null
         fromOverlay = false
         externalSnapshot = null
-        externalVisionSemanticMap = null
-        externalRawScreenshot = false
+        externalSemanticMapJpegBase64 = null
         externalContextCapturedAtElapsedRealtime = 0L
         externalContextSessionId = 0L
     }
@@ -1050,7 +1011,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun ActionType.requiresExternalScreen(): Boolean = this in setOf(
         ActionType.CLICK,
-        ActionType.VISUAL_CLICK,
         ActionType.SET_TEXT,
         ActionType.SCROLL_DOWN,
         ActionType.SCROLL_UP,
@@ -1083,7 +1043,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         private const val KEY_DISCLOSURE_ACCEPTED = "accessibility_disclosure_accepted_v1"
         private const val KEY_VOICE_DISCLOSURE_ACCEPTED = "voice_disclosure_accepted_v1"
         private const val KEY_WAKE_WORD_ENABLED = "wake_word_enabled_v1"
-        private const val KEY_VISUAL_SCREEN_CONSENT = "visual_screen_consent_v1"
         private const val CONFIRMATION_DISMISS_DELAY_MILLIS = 200L
         private const val OVERLAY_CONTEXT_TTL_MILLIS = 120_000L
     }

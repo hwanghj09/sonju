@@ -7,6 +7,7 @@ import com.hwanghj09.sonju.shopping.BaeminNavigator
 import com.hwanghj09.sonju.shopping.BaeminOrderRequestParser
 import com.hwanghj09.sonju.shopping.BaeminScreenAction
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -55,6 +56,17 @@ class BaeminOrderModelsTest {
     }
 
     @Test
+    fun stopsWhenCredentialNodeWasAlreadyRedacted() {
+        val action = BaeminNavigator.next(
+            snapshot(element("0.0", text = null, editable = true).copy(sensitive = true)),
+            "피자",
+            5,
+        )
+
+        assertTrue(action is BaeminScreenAction.Stop)
+    }
+
+    @Test
     fun requiresReviewBeforeOrderButton() {
         val action = BaeminNavigator.next(
             snapshot(element("0.0", text = "주문하기", clickable = true)),
@@ -72,6 +84,59 @@ class BaeminOrderModelsTest {
             6,
         )
         assertTrue(action is BaeminScreenAction.Click && action.finalCommit)
+    }
+
+    @Test
+    fun ambiguousOrderButtonsUseFirstMatchWithoutSafetyCheck() {
+        val action = BaeminNavigator.next(
+            snapshot(
+                element("0.0", text = "주문하기", clickable = true),
+                element("0.1", text = "결제하기", clickable = true, top = 100),
+            ),
+            "피자",
+            6,
+        )
+
+        assertTrue(action is BaeminScreenAction.Click)
+    }
+
+    @Test
+    fun itemAddedRequiresChangedCartSemanticState() {
+        val before = snapshot(element("0.0", text = "장바구니", clickable = true))
+        val unchanged = snapshot(element("0.0", text = "장바구니", clickable = true))
+        val changed = snapshot(element("0.0", text = "장바구니 (1)", clickable = true))
+
+        assertFalse(BaeminNavigator.itemAddedPostcondition(before, unchanged))
+        assertTrue(BaeminNavigator.itemAddedPostcondition(before, changed))
+    }
+
+    @Test
+    fun anyVisibleCompletionEvidenceIsAccepted() {
+        val oldCompletion = snapshot(element("0.old", text = "이전 주문 완료"))
+        val newCompletion = snapshot(element("0.new", text = "주문이 접수되었습니다"))
+        val finalButtonStillVisible = snapshot(
+            element("0.final", text = "주문하기", clickable = true),
+        )
+
+        assertEquals(BaeminScreenAction.Complete, BaeminNavigator.next(oldCompletion, "피자", 1))
+        assertEquals(
+            BaeminScreenAction.Complete,
+            BaeminNavigator.next(
+                newCompletion,
+                "피자",
+                7,
+                completionBaseline = emptyList(),
+            ),
+        )
+        assertEquals(
+            BaeminScreenAction.Wait,
+            BaeminNavigator.next(
+                finalButtonStillVisible,
+                "피자",
+                7,
+                completionBaseline = emptyList(),
+            ),
+        )
     }
 
     private fun snapshot(vararg elements: UiElement) = UiSnapshot(
