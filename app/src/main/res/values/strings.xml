@@ -40,6 +40,9 @@
     <string name="baemin_final_title">주문 전에 마지막 확인</string>
     <string name="baemin_confirm_order">내용 확인했고 주문 확정</string>
     <string name="baemin_cancel_order">주문 취소</string>
+    <string name="feedback_good">좋다</string>
+    <string name="feedback_bad">안 좋다</string>
+    <string name="feedback_close">닫기</string>
     <string name="accessibility_guide_title">화면 도우미 연결 순서</string>
     <string name="accessibility_guide_message">설정 화면에서 다음 순서로 눌러 주세요.\n\n1. ‘설치된 앱’ 또는 ‘다운로드한 앱’\n2. ‘손주 화면 도우미’\n3. ‘사용’ 켜기\n\n휴대폰에 따라 메뉴 이름이 조금 다를 수 있어요.</string>
     <string name="accessibility_guide_open">설정 열기</string>

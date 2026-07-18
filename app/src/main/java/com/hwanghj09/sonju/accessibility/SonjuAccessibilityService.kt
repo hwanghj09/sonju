@@ -60,6 +60,7 @@ import com.hwanghj09.sonju.agent.SafetyPolicy
 import com.hwanghj09.sonju.agent.ScreenExplainer
 import com.hwanghj09.sonju.agent.TrustedSettingsRoute
 import com.hwanghj09.sonju.agent.UiSnapshot
+import com.hwanghj09.sonju.agent.UserFeedbackMemory
 import com.hwanghj09.sonju.agent.ValidatedClick
 import com.hwanghj09.sonju.agent.VisualTargetResolver
 import com.hwanghj09.sonju.ai.GeminiPlanner
@@ -139,6 +140,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     private val overlaySession = AtomicLong(0L)
     private val overlayGeminiPlanner = GeminiPlanner()
     private val overlayTaskMemory by lazy { AppTaskMemory(this) }
+    private val userFeedbackMemory by lazy { UserFeedbackMemory(this) }
     private var executionGeneration = 0L
     private var executionActive = false
     private var activeExecution: ActiveExecution? = null
@@ -156,6 +158,10 @@ class SonjuAccessibilityService : AccessibilityService() {
     private var voicePanelWaitingForContinuation = false
     private var voicePanelFromOverlay = false
     private var voicePanelConfirmButton: TextView? = null
+    private var feedbackPromptVisible = false
+    private var activeFeedbackCommand: String? = null
+    private var activeFeedbackSnapshot: UiSnapshot? = null
+    private var activeFeedbackApproach = ""
     private var overlayCommandGeneration = 0L
     private var overlayCommandExecutionActive = false
     private var proactiveSearchCommand: String? = null
@@ -245,6 +251,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         mainHandler.post {
             if (utteranceId == null || activeExplanationUtteranceId != utteranceId) return@post
             activeExplanationUtteranceId = null
+            if (feedbackPromptVisible) return@post
             if (voicePanel != null) {
                 dismissVoicePanel(resumeWakeWord = true)
             } else {
@@ -454,7 +461,9 @@ class SonjuAccessibilityService : AccessibilityService() {
             }
             setOnTouchListener { _, event ->
                 if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
-                    dismissVoicePanelFromOutside(cancelBaemin = false)
+                    if (!voicePanelCommandDispatched) {
+                        dismissVoicePanelFromOutside(cancelBaemin = false)
+                    }
                     true
                 } else {
                     false
@@ -488,6 +497,8 @@ class SonjuAccessibilityService : AccessibilityService() {
     private fun beginVoicePanelListening() {
         if (voicePanel == null) return
         stopVoicePanelRecognizer()
+        feedbackPromptVisible = false
+        voicePanel?.findViewById<View>(R.id.feedbackActions)?.visibility = View.GONE
         voicePanelCommandDispatched = false
         voicePanelAccumulatedCommand = ""
         voicePanelWaitingForContinuation = false
@@ -653,6 +664,8 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun showVoicePanelFailure(message: Int) {
         val panel = voicePanel ?: return
+        feedbackPromptVisible = false
+        panel.findViewById<View>(R.id.feedbackActions).visibility = View.GONE
         voicePanelCommandDispatched = true
         stopVoicePanelRecognizer()
         voicePanelTranscript?.setText(message)
@@ -688,6 +701,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         stopVoicePanelRecognizer()
         stopExplanationSpeech()
         voicePanelConfirmButton = null
+        feedbackPromptVisible = false
         voicePanelWaitingForContinuation = false
         val panel = voicePanel
         voicePanel = null
@@ -717,19 +731,22 @@ class SonjuAccessibilityService : AccessibilityService() {
             return
         }
         val generation = ++overlayCommandGeneration
+        activeFeedbackCommand = command
+        activeFeedbackApproach = ""
         overlayGeminiPlanner.cancelPending()
-        voicePanelTranscript?.text = "현재 화면에서 안전한 실행 방법을 확인하고 있어요…"
+        showVoicePanelWorking("현재 화면에서 안전한 실행 방법을 확인하고 있어요…")
 
         BaeminOrderRequestParser.parse(command)?.let { request ->
+            activeFeedbackSnapshot = UiSnapshot.empty().copy(
+                packageName = BaeminNavigator.PACKAGE_NAME,
+            )
+            activeFeedbackApproach = "배민에서 ${request.query} 검색 및 주문 보조"
             overlayCommandExecutionActive = true
-            dismissVoicePanel(resumeWakeWord = false)
+            showVoicePanelWorking("배민에서 ‘${request.query}’을 찾고 있어요…")
             val started = startBaeminOrder(request.query)
             overlayCommandExecutionActive = false
-            quickVoiceButton?.visibility = View.VISIBLE
             if (!started) {
                 deliverScreenExplanation(getString(R.string.baemin_unavailable))
-            } else {
-                resumeWakeWordListening()
             }
             return
         }
@@ -744,6 +761,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             return
         }
         val snapshot = context?.snapshot ?: UiSnapshot.empty()
+        activeFeedbackSnapshot = snapshot
         if (ScreenExplainer.isExplanationRequest(command)) {
             val appLabel = runCatching {
                 @Suppress("DEPRECATION")
@@ -799,6 +817,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             snapshot = snapshot,
             imageJpegBase64 = context?.visionSemanticMap,
             rawScreenshot = context?.rawScreenshot == true,
+            userFeedbackGuidance = userFeedbackMemory.guidance(command, snapshot.packageName),
         ) { result ->
             mainHandler.post {
                 if (generation != overlayCommandGeneration || voicePanel == null) return@post
@@ -817,6 +836,10 @@ class SonjuAccessibilityService : AccessibilityService() {
                                 imageJpegBase64 = screenshot,
                                 rawScreenshot = true,
                                 preferVisualClick = true,
+                                userFeedbackGuidance = userFeedbackMemory.guidance(
+                                    command,
+                                    snapshot.packageName,
+                                ),
                             ) { visualResult ->
                                 mainHandler.post {
                                     if (generation != overlayCommandGeneration ||
@@ -849,6 +872,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
 
     private fun needsVisualFallback(plan: AgentPlan, snapshot: UiSnapshot): Boolean {
+        if (plan.goalCompleted) return false
         val actions = plan.actions.filterNot { it.type == ActionType.FINISH }
         if (actions.isEmpty()) return true
         val action = actions.singleOrNull() ?: return false
@@ -857,6 +881,20 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun handleOverlayPlan(command: String, snapshot: UiSnapshot, plan: AgentPlan) {
         transientPlanningRetryCount = 0
+        activeFeedbackCommand = command
+        activeFeedbackSnapshot = snapshot
+        activeFeedbackApproach = plan.summary
+        if (plan.goalCompleted && plan.actions.none { it.type != ActionType.FINISH }) {
+            clearProactiveSearch()
+            showFeedbackPrompt(
+                command = command,
+                snapshot = snapshot,
+                completed = true,
+                message = "완료됐어요. ${plan.summary.ifBlank { "요청한 화면에 도착했어요." }}",
+                approach = plan.summary,
+            )
+            return
+        }
         val assessment = SafetyPolicy.evaluate(command, plan, snapshot)
         when (assessment.decision) {
             SafetyDecision.BLOCK -> {
@@ -1008,7 +1046,9 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun executeOverlayPlan(command: String, snapshot: UiSnapshot, plan: AgentPlan) {
         overlayCommandExecutionActive = true
-        dismissVoicePanel(resumeWakeWord = false)
+        showVoicePanelWorking(
+            plan.summary.ifBlank { "요청한 동작을 실행하고 있어요…" },
+        )
         quickVoiceButton?.visibility = View.GONE
         executePlan(
             plan = plan,
@@ -1017,12 +1057,14 @@ class SonjuAccessibilityService : AccessibilityService() {
         ) { result ->
             overlayCommandExecutionActive = false
             quickVoiceButton?.visibility = View.VISIBLE
-            if (result.success && plan.continueAfterAction) {
+            if (result.success &&
+                (plan.continueAfterAction || shouldVerifyGoalAfterAction(plan))
+            ) {
                 if (proactiveSearchStepCount >= MAX_PROACTIVE_SEARCH_STEPS) {
                     val attempts = proactiveSearchStepCount
                     clearProactiveSearch()
                     deliverScreenExplanation(
-                        "화면을 ${attempts}번 확인했지만 요청한 항목을 찾지 못해 멈췄어요.",
+                        "화면을 ${attempts}번 확인했지만 완료 화면을 확인하지 못해 멈췄어요.",
                     )
                     return@executePlan
                 }
@@ -1046,7 +1088,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             if (result.success) overlayTaskMemory.remember(command, snapshot, plan)
             clearProactiveSearch()
             val message = if (result.success) {
-                plan.summary.ifBlank { getString(R.string.action_completed) }
+                "완료됐어요. ${plan.summary.ifBlank { getString(R.string.action_completed) }}"
             } else {
                 result.message.ifBlank { getString(R.string.action_failed) }
             }
@@ -1054,9 +1096,125 @@ class SonjuAccessibilityService : AccessibilityService() {
                 deliverScreenExplanation(message)
                 return@executePlan
             }
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-            resumeWakeWordListening()
+            showFeedbackPrompt(
+                command = command,
+                snapshot = snapshot,
+                completed = true,
+                message = message,
+                approach = plan.summary,
+            )
         }
+    }
+
+    private fun showVoicePanelWorking(message: String) {
+        feedbackPromptVisible = false
+        voicePanel?.findViewById<View>(R.id.feedbackActions)?.visibility = View.GONE
+        voicePanelTranscript?.text = message.take(1_000)
+        voicePanelConfirmButton?.let { existing ->
+            (existing.parent as? LinearLayout)?.removeView(existing)
+        }
+        voicePanelConfirmButton = null
+        voicePanel?.findViewById<TextView>(R.id.cancelVoiceCommand)?.apply {
+            text = "중단"
+            isEnabled = true
+            alpha = 1f
+            setOnClickListener { forceStopFromVoicePanel() }
+        }
+    }
+
+    private fun forceStopFromVoicePanel() {
+        val command = activeFeedbackCommand.orEmpty()
+        val snapshot = activeFeedbackSnapshot ?: UiSnapshot.empty()
+        val approach = activeFeedbackApproach
+        overlayCommandGeneration += 1
+        overlayGeminiPlanner.cancelPending()
+        stopCurrentExecution()
+        mainHandler.post {
+            if (voicePanel == null) return@post
+            showFeedbackPrompt(
+                command = command,
+                snapshot = snapshot,
+                completed = false,
+                message = "작업을 중단했어요.",
+                approach = approach,
+            )
+        }
+    }
+
+    private fun showFeedbackPrompt(
+        command: String,
+        snapshot: UiSnapshot,
+        completed: Boolean,
+        message: String,
+        approach: String,
+    ) {
+        val panel = voicePanel
+        if (panel == null) {
+            Toast.makeText(this, message.take(500), Toast.LENGTH_LONG).show()
+            resumeWakeWordListening()
+            return
+        }
+        clearProactiveSearch()
+        activeFeedbackCommand = command
+        activeFeedbackSnapshot = snapshot
+        activeFeedbackApproach = approach
+        feedbackPromptVisible = true
+        voicePanelCommandDispatched = false
+        voicePanelTranscript?.text = "$message\n이 처리 방식은 어땠나요?"
+        panel.findViewById<View>(R.id.feedbackActions).visibility = View.VISIBLE
+        panel.findViewById<TextView>(R.id.feedbackGood).setOnClickListener {
+            submitFeedback(positive = true, completed = completed)
+        }
+        panel.findViewById<TextView>(R.id.feedbackBad).setOnClickListener {
+            submitFeedback(positive = false, completed = completed)
+        }
+        panel.findViewById<TextView>(R.id.cancelVoiceCommand).apply {
+            setText(R.string.feedback_close)
+            isEnabled = true
+            alpha = 1f
+            setOnClickListener { dismissVoicePanel(resumeWakeWord = true) }
+        }
+        speakExplanation(message)
+    }
+
+    private fun submitFeedback(positive: Boolean, completed: Boolean) {
+        val command = activeFeedbackCommand.orEmpty()
+        val snapshot = activeFeedbackSnapshot ?: UiSnapshot.empty()
+        userFeedbackMemory.record(
+            command = command,
+            packageName = snapshot.packageName,
+            completed = completed,
+            positive = positive,
+            approach = activeFeedbackApproach,
+        )
+        if (!positive && command.isNotBlank()) overlayTaskMemory.forget(command, snapshot)
+        feedbackPromptVisible = false
+        voicePanel?.findViewById<View>(R.id.feedbackActions)?.visibility = View.GONE
+        voicePanelTranscript?.text = if (positive) {
+            "좋다 평가를 저장했어요. 다음 비슷한 요청에 참고할게요."
+        } else {
+            "안 좋다 평가를 저장했어요. 다음에는 다른 방법을 찾을게요."
+        }
+        mainHandler.postDelayed(
+            { if (voicePanel != null) dismissVoicePanel(resumeWakeWord = true) },
+            FEEDBACK_SAVED_CLOSE_DELAY_MILLIS,
+        )
+    }
+
+    private fun shouldVerifyGoalAfterAction(plan: AgentPlan): Boolean {
+        if (plan.source !in setOf(
+                PlanSource.GEMINI_STRUCTURE,
+                PlanSource.GEMINI_VISION,
+                PlanSource.GEMINI_RAW_SCREEN,
+            )
+        ) return false
+        val action = plan.actions.singleOrNull { it.type != ActionType.FINISH } ?: return false
+        return action.type in setOf(
+            ActionType.CLICK,
+            ActionType.VISUAL_CLICK,
+            ActionType.OPEN_APP,
+            ActionType.BACK,
+        )
     }
 
     private fun shouldReplanAfterExecutionFailure(
@@ -1084,7 +1242,15 @@ class SonjuAccessibilityService : AccessibilityService() {
             resumeWakeWordListening()
             return
         }
+        feedbackPromptVisible = false
+        panel.findViewById<View>(R.id.feedbackActions).visibility = View.GONE
         voicePanelTranscript?.text = message.take(1_000)
+        panel.findViewById<TextView>(R.id.cancelVoiceCommand)?.apply {
+            setText(R.string.voice_retry)
+            isEnabled = true
+            alpha = 1f
+            setOnClickListener { retryVoicePanel() }
+        }
         voicePanelConfirmButton?.let { existing ->
             (existing.parent as? LinearLayout)?.removeView(existing)
         }
@@ -1796,13 +1962,52 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun finishBaeminOrder(message: String, success: Boolean) {
         cancelBaeminOrder()
-        if (voicePanel != null) dismissVoicePanel(resumeWakeWord = false)
-        Toast.makeText(this, message.take(500), Toast.LENGTH_LONG).show()
-        quickVoiceButton?.visibility = View.VISIBLE
-        resumeWakeWordListening()
+        if (voicePanel != null) {
+            if (success) {
+                showFeedbackPrompt(
+                    command = activeFeedbackCommand.orEmpty(),
+                    snapshot = activeFeedbackSnapshot ?: UiSnapshot.empty().copy(
+                        packageName = BaeminNavigator.PACKAGE_NAME,
+                    ),
+                    completed = true,
+                    message = "완료됐어요. $message",
+                    approach = activeFeedbackApproach,
+                )
+            } else {
+                showOverlayMessage(message)
+            }
+        } else {
+            Toast.makeText(this, message.take(500), Toast.LENGTH_LONG).show()
+            quickVoiceButton?.visibility = View.VISIBLE
+            resumeWakeWordListening()
+        }
     }
 
     private fun showBaeminReviewOverlay(summary: String) {
+        (voicePanel as? LinearLayout)?.let { existingPanel ->
+            stopVoicePanelRecognizer()
+            stopExplanationSpeech()
+            voicePanelTranscript?.text = summary
+            voicePanelCommandDispatched = true
+            voicePanelFromOverlay = false
+            quickVoiceButton?.visibility = View.GONE
+            existingPanel.findViewById<TextView>(R.id.cancelVoiceCommand).apply {
+                setText(R.string.baemin_cancel_order)
+                isEnabled = true
+                alpha = 1f
+                setOnClickListener {
+                    cancelBaeminWithFeedback()
+                }
+            }
+            showVoicePanelConfirmation(
+                message = summary,
+                confirmLabel = getString(R.string.baemin_confirm_order),
+            ) {
+                showVoicePanelWorking("최종 주문 결과를 확인하고 있어요…")
+                confirmBaeminCommit()
+            }
+            return
+        }
         if (voicePanel != null) dismissVoicePanel(resumeWakeWord = false)
         pauseWakeWordListening()
         val windowManager = overlayWindowManager
@@ -1812,7 +2017,9 @@ class SonjuAccessibilityService : AccessibilityService() {
         val panel = LayoutInflater.from(this).inflate(R.layout.activity_voice_command, null)
         panel.setOnTouchListener { _, event ->
             if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
-                dismissVoicePanelFromOutside(cancelBaemin = true)
+                if (!voicePanelCommandDispatched) {
+                    dismissVoicePanelFromOutside(cancelBaemin = true)
+                }
                 true
             } else {
                 false
@@ -1847,23 +2054,29 @@ class SonjuAccessibilityService : AccessibilityService() {
         panel.findViewById<TextView>(R.id.cancelVoiceCommand).apply {
             setText(R.string.baemin_cancel_order)
             setOnClickListener {
-                dismissVoicePanel(resumeWakeWord = false)
-                cancelBaeminOrder()
-                Toast.makeText(
-                    this@SonjuAccessibilityService,
-                    R.string.baemin_cancel_order,
-                    Toast.LENGTH_SHORT,
-                ).show()
-                resumeWakeWordListening()
+                cancelBaeminWithFeedback()
             }
         }
         showVoicePanelConfirmation(
             message = summary,
             confirmLabel = getString(R.string.baemin_confirm_order),
         ) {
-            dismissVoicePanel(resumeWakeWord = false)
+            showVoicePanelWorking("최종 주문 결과를 확인하고 있어요…")
             confirmBaeminCommit()
         }
+    }
+
+    private fun cancelBaeminWithFeedback() {
+        cancelBaeminOrder()
+        showFeedbackPrompt(
+            command = activeFeedbackCommand.orEmpty(),
+            snapshot = activeFeedbackSnapshot ?: UiSnapshot.empty().copy(
+                packageName = BaeminNavigator.PACKAGE_NAME,
+            ),
+            completed = false,
+            message = "주문 보조를 중단했어요.",
+            approach = activeFeedbackApproach,
+        )
     }
 
     fun requestVoiceWake(command: String? = null) {
@@ -2848,6 +3061,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         private const val VOICE_CONTINUATION_RESTART_MILLIS = 100L
         private const val VOICE_CONTINUATION_GRACE_MILLIS = 2_500L
         private const val OVERLAY_MESSAGE_CLOSE_DELAY_MILLIS = 3_000L
+        private const val FEEDBACK_SAVED_CLOSE_DELAY_MILLIS = 1_200L
         private const val TOUCH_INDICATOR_DURATION_MILLIS = 1_000L
         private const val PROACTIVE_SEARCH_SETTLE_MILLIS = 900L
         private const val MAX_PROACTIVE_SEARCH_STEPS = 10

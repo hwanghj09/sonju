@@ -43,4 +43,37 @@
         android:textSize="17sp"
         android:textStyle="bold" />
 
+    <LinearLayout
+        android:id="@+id/feedbackActions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="end"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/feedbackBad"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:paddingHorizontal="18dp"
+            android:text="@string/feedback_bad"
+            android:textColor="@color/sonju_text"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/feedbackGood"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:gravity="center"
+            android:paddingHorizontal="18dp"
+            android:text="@string/feedback_good"
+            android:textColor="@color/sonju_green"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
 </LinearLayout>

@@ -714,6 +714,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun handlePlan(command: String, snapshot: UiSnapshot, plan: AgentPlan) {
+        if (plan.goalCompleted && plan.actions.none { it.type != ActionType.FINISH }) {
+            val message = "완료됐어요. ${plan.summary.ifBlank { "요청한 화면에 도착했어요." }}"
+            finishBusyWithMessage(message, success = true)
+            speak(message)
+            return
+        }
         if (!fromOverlay && plan.actions.any { it.type.requiresExternalScreen() }) {
             showBlocked(
                 SafetyAssessment(

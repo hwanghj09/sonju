@@ -219,6 +219,7 @@ data class AgentPlan(
     val actions: List<AgentAction>,
     val source: PlanSource,
     val continueAfterAction: Boolean = false,
+    val goalCompleted: Boolean = false,
 )
 
 enum class SafetyDecision {
