@@ -40,6 +40,7 @@ import com.google.android.material.textfield.TextInputEditText
 import com.hwanghj09.sonju.accessibility.SonjuAccessibilityService
 import com.hwanghj09.sonju.agent.ActionType
 import com.hwanghj09.sonju.agent.AgentPlan
+import com.hwanghj09.sonju.agent.AppTaskMemory
 import com.hwanghj09.sonju.agent.ContextLifetime
 import com.hwanghj09.sonju.agent.RuleBasedPlanner
 import com.hwanghj09.sonju.agent.RiskLevel
@@ -75,6 +76,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var competingControls: List<View> = emptyList()
 
     private val geminiPlanner = GeminiPlanner()
+    private lateinit var appTaskMemory: AppTaskMemory
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
     private var fromOverlay = false
@@ -124,7 +126,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 commandInput.setSelection(heard.length)
                 if (shouldAutoExecute) {
                     voiceReviewText.visibility = View.GONE
-                    commandInput.post { handleCommand(autoStarted = true) }
+                    commandInput.post { handleCommand() }
                     return@registerForActivityResult
                 }
                 val reviewMessage = getString(R.string.voice_review, heard)
@@ -172,9 +174,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         bindViews()
         configureActions()
+        appTaskMemory = AppTaskMemory(this)
         textToSpeech = TextToSpeech(this, this)
         receiveOverlayContext(intent)
-        receiveBaeminIntent(intent)
 
         val preferences = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
         if (!preferences.getBoolean(KEY_DISCLOSURE_ACCEPTED, false)) {
@@ -188,7 +190,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         super.onNewIntent(intent)
         setIntent(intent)
         receiveOverlayContext(intent)
-        receiveBaeminIntent(intent)
     }
 
     override fun onResume() {
@@ -383,7 +384,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             commandInput.setSelection(safeCommand.length)
             voiceReviewText.visibility = View.GONE
             resumeWakeWordListening()
-            handleCommand(autoStarted = true)
+            handleCommand()
         }
     }
 
@@ -585,7 +586,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun handleCommand(autoStarted: Boolean = false) {
+    private fun handleCommand() {
         if (busy) return
         if (fromOverlay && !ContextLifetime.isFresh(
                 SystemClock.elapsedRealtime(),
@@ -608,11 +609,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         BaeminOrderRequestParser.parse(command)?.let { request ->
             hideKeyboard()
             voiceReviewText.visibility = View.GONE
-            if (autoStarted) {
-                startBaeminAutomatically(request)
-            } else {
-                showBaeminStartConfirmation(request)
-            }
+            startBaeminAutomatically(request)
             return
         }
         SafetyPolicy.preflightCommand(command)?.let { assessment ->
@@ -644,7 +641,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         SafetyPolicy.highRiskScreenReason(
             snapshot,
-            allowTruncated = rawScreenshot,
+            allowTruncated = true,
         )?.let { reason ->
             showBlocked(
                 SafetyAssessment(
@@ -653,6 +650,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     reason = reason,
                 ),
             )
+            return
+        }
+
+        appTaskMemory.recall(command, snapshot)?.let { rememberedPlan ->
+            showProgress("전에 성공한 화면 동작을 안전하게 다시 확인하고 있어요")
+            handlePlan(command, snapshot, rememberedPlan)
             return
         }
 
@@ -724,12 +727,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val assessment = SafetyPolicy.evaluate(command, plan, snapshot)
         when (assessment.decision) {
             SafetyDecision.BLOCK -> showBlocked(assessment)
-            SafetyDecision.REQUIRE_CONFIRMATION -> showConfirmation(plan, assessment, snapshot)
-            SafetyDecision.ALLOW -> executePlan(plan, snapshot)
+            SafetyDecision.REQUIRE_CONFIRMATION ->
+                showConfirmation(command, plan, assessment, snapshot)
+            SafetyDecision.ALLOW -> executePlan(command, plan, snapshot)
         }
     }
 
     private fun showConfirmation(
+        command: String,
         plan: AgentPlan,
         assessment: SafetyAssessment,
         snapshot: UiSnapshot,
@@ -764,6 +769,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             .setNegativeButton(R.string.confirm_cancel) { _, _ ->
                 progressCard.visibility = View.GONE
                 clearOverlayContext()
+                startVoiceInput(autoExecute = true)
             }
             .setPositiveButton(R.string.confirm_execute) { _, _ ->
                 if (plan.actions.any { it.type.requiresExternalScreen() } &&
@@ -785,7 +791,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         if (confirmationGeneration == requestGeneration &&
                             !isFinishing && !isDestroyed
                         ) {
-                            executePlan(plan, snapshot)
+                            executePlan(command, plan, snapshot)
                         }
                     },
                     CONFIRMATION_DISMISS_DELAY_MILLIS,
@@ -807,15 +813,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         setBusy(false, keepProgress = false)
         showResult(assessment.reason, success = false)
         speak(assessment.reason)
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.blocked_title)
-            .setMessage(assessment.reason)
-            .setPositiveButton(R.string.blocked_close, null)
-            .show()
+        if (!isFinishing && !isDestroyed) {
+            runCatching {
+                MaterialAlertDialogBuilder(this)
+                    .setTitle(R.string.blocked_title)
+                    .setMessage(assessment.reason)
+                    .setPositiveButton(R.string.blocked_close, null)
+                    .show()
+            }
+        }
         clearOverlayContext()
     }
 
-    private fun executePlan(plan: AgentPlan, snapshot: UiSnapshot) {
+    private fun executePlan(command: String, plan: AgentPlan, snapshot: UiSnapshot) {
         val service = SonjuAccessibilityService.instance
         if (service == null || !isServiceEnabledInSettings()) {
             finishBusyWithMessage(getString(R.string.accessibility_required), success = false)
@@ -838,6 +848,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     return@runOnUiThread
                 }
                 val message = if (result.success) {
+                    appTaskMemory.remember(command, snapshot, plan)
                     plan.summary.ifBlank { getString(R.string.action_completed) }
                 } else {
                     result.message.ifBlank { getString(R.string.action_failed) }
@@ -903,7 +914,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.baemin_start_title)
             .setMessage(getString(R.string.baemin_start_message, request.query))
-            .setNegativeButton(R.string.confirm_cancel, null)
+            .setNegativeButton(R.string.confirm_cancel) { _, _ ->
+                startVoiceInput(autoExecute = true)
+            }
             .setPositiveButton(R.string.baemin_start) { _, _ ->
                 startBaeminAutomatically(request)
             }
@@ -917,36 +930,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         } else {
             clearOverlayContext()
             showToast(getString(R.string.baemin_started, request.query))
-        }
-    }
-
-    private fun receiveBaeminIntent(intent: Intent) {
-        val review = intent.getStringExtra(SonjuAccessibilityService.EXTRA_BAEMIN_REVIEW)
-        if (!review.isNullOrBlank()) {
-            intent.removeExtra(SonjuAccessibilityService.EXTRA_BAEMIN_REVIEW)
-            MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.baemin_final_title)
-                .setMessage(review)
-                .setCancelable(false)
-                .setNegativeButton(R.string.baemin_cancel_order) { _, _ ->
-                    SonjuAccessibilityService.instance?.cancelBaeminOrder()
-                    finish()
-                }
-                .setPositiveButton(R.string.baemin_confirm_order) { _, _ ->
-                    SonjuAccessibilityService.instance?.confirmBaeminCommit()
-                }
-                .show()
-        }
-        val status = intent.getStringExtra(SonjuAccessibilityService.EXTRA_BAEMIN_STATUS)
-        if (!status.isNullOrBlank()) {
-            val success = intent.getBooleanExtra(
-                SonjuAccessibilityService.EXTRA_BAEMIN_STATUS_SUCCESS,
-                false,
-            )
-            intent.removeExtra(SonjuAccessibilityService.EXTRA_BAEMIN_STATUS)
-            intent.removeExtra(SonjuAccessibilityService.EXTRA_BAEMIN_STATUS_SUCCESS)
-            showResult(status, success)
-            speak(status)
         }
     }
 

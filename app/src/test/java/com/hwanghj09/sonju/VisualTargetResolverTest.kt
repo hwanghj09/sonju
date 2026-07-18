@@ -38,6 +38,8 @@ class VisualTargetResolverTest {
 
         assertNull(VisualTargetResolver.resolveClickablePath(snapshot, 500, 500))
         assertNull(VisualTargetResolver.resolveClickablePath(snapshot, -1, 500))
+        assertEquals(Pair(500, 1000), VisualTargetResolver.resolveScreenPoint(snapshot, 500, 500))
+        assertNull(VisualTargetResolver.resolveScreenPoint(snapshot, -1, 500))
     }
 
     @Test

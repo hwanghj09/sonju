@@ -1,12 +1,22 @@
 package com.hwanghj09.sonju.agent
 
 object VisualTargetResolver {
-    fun resolveClickablePath(snapshot: UiSnapshot, normalizedX: Int?, normalizedY: Int?): String? {
+    fun resolveScreenPoint(
+        snapshot: UiSnapshot,
+        normalizedX: Int?,
+        normalizedY: Int?,
+    ): Pair<Int, Int>? {
         val xValue = normalizedX?.takeIf { it in 0..1000 } ?: return null
         val yValue = normalizedY?.takeIf { it in 0..1000 } ?: return null
         if (snapshot.visualScreenWidth <= 0 || snapshot.visualScreenHeight <= 0) return null
-        val x = xValue * snapshot.visualScreenWidth / 1000
-        val y = yValue * snapshot.visualScreenHeight / 1000
+        return Pair(
+            xValue * snapshot.visualScreenWidth / 1000,
+            yValue * snapshot.visualScreenHeight / 1000,
+        )
+    }
+
+    fun resolveClickablePath(snapshot: UiSnapshot, normalizedX: Int?, normalizedY: Int?): String? {
+        val (x, y) = resolveScreenPoint(snapshot, normalizedX, normalizedY) ?: return null
         val candidates = snapshot.elements.filter { element ->
             element.visible && element.enabled && element.clickable && !element.sensitive &&
                 x in element.bounds.left..element.bounds.right &&

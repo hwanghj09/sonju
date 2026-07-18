@@ -17,6 +17,8 @@ class WakeWordMatcherTest {
     @Test
     fun matchesCommonRecognitionVariant() {
         assertTrue(WakeWordMatcher.matches("손주아"))
+        assertTrue(WakeWordMatcher.matches("선주야"))
+        assertTrue(WakeWordMatcher.matches("손쥬야"))
     }
 
     @Test
@@ -34,6 +36,10 @@ class WakeWordMatcherTest {
         assertEquals(
             "와이파이 설정 열어 줘",
             WakeWordMatcher.commandAfterWakeWord("손 주 야 와이파이 설정 열어 줘"),
+        )
+        assertEquals(
+            "카카오톡 열어 줘",
+            WakeWordMatcher.commandAfterWakeWord("선쥬야 카카오톡 열어 줘"),
         )
     }
 

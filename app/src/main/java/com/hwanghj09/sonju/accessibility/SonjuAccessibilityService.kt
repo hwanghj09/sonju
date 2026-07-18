@@ -1,13 +1,20 @@
 package com.hwanghj09.sonju.accessibility
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.annotation.TargetApi
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,28 +23,53 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import android.view.Display
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
-import com.hwanghj09.sonju.MainActivity
+import androidx.core.content.ContextCompat
+import com.hwanghj09.sonju.R
 import com.hwanghj09.sonju.agent.ActionType
 import com.hwanghj09.sonju.agent.AgentAction
 import com.hwanghj09.sonju.agent.AgentPlan
+import com.hwanghj09.sonju.agent.AppTaskMemory
 import com.hwanghj09.sonju.agent.ContextLifetime
 import com.hwanghj09.sonju.agent.ExecutionResult
+import com.hwanghj09.sonju.agent.PlanSource
+import com.hwanghj09.sonju.agent.RiskLevel
+import com.hwanghj09.sonju.agent.RuleBasedPlanner
+import com.hwanghj09.sonju.agent.SafetyAssessment
+import com.hwanghj09.sonju.agent.SafetyDecision
 import com.hwanghj09.sonju.agent.SafetyPolicy
+import com.hwanghj09.sonju.agent.ScreenExplainer
 import com.hwanghj09.sonju.agent.TrustedSettingsRoute
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.agent.ValidatedClick
 import com.hwanghj09.sonju.agent.VisualTargetResolver
+import com.hwanghj09.sonju.ai.GeminiPlanner
 import com.hwanghj09.sonju.shopping.BaeminNavigator
+import com.hwanghj09.sonju.shopping.BaeminOrderRequestParser
 import com.hwanghj09.sonju.shopping.BaeminScreenAction
-import com.hwanghj09.sonju.voice.VoiceCommandActivity
+import com.hwanghj09.sonju.voice.WakeWordService
 import java.io.ByteArrayOutputStream
 import java.text.Normalizer
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -105,12 +137,30 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
     private val epoch = AtomicLong(SystemClock.elapsedRealtime())
     private val overlaySession = AtomicLong(0L)
+    private val overlayGeminiPlanner = GeminiPlanner()
+    private val overlayTaskMemory by lazy { AppTaskMemory(this) }
     private var executionGeneration = 0L
     private var executionActive = false
     private var activeExecution: ActiveExecution? = null
     private var overlayCaptureInProgress = false
-    private var overlayAutoStartVoice = false
     private var overlayVoiceCommand: String? = null
+    private var quickVoiceButton: ImageButton? = null
+    private var overlayWindowManager: WindowManager? = null
+    private var touchIndicator: View? = null
+    private var touchIndicatorGeneration = 0L
+    private var voicePanel: View? = null
+    private var voicePanelTranscript: TextView? = null
+    private var voicePanelRecognizer: SpeechRecognizer? = null
+    private var voicePanelCommandDispatched = false
+    private var voicePanelAccumulatedCommand = ""
+    private var voicePanelWaitingForContinuation = false
+    private var voicePanelFromOverlay = false
+    private var voicePanelConfirmButton: TextView? = null
+    private var overlayCommandGeneration = 0L
+    private var overlayCommandExecutionActive = false
+    private var proactiveSearchCommand: String? = null
+    private var proactiveSearchStepCount = 0
+    private var transientPlanningRetryCount = 0
     private var lastObservedApplicationSnapshot: ObservedApplicationSnapshot? = null
     private var lastObservedSnapshotCaptureAtElapsedRealtime = 0L
     private var lastObservedWindowPackage: String? = null
@@ -122,6 +172,11 @@ class SonjuAccessibilityService : AccessibilityService() {
     private var baeminOrderGeneration = 0L
     private var baeminOrderSession: BaeminOrderSession? = null
     private var pendingBaeminCommit: PendingBaeminCommit? = null
+    private var textToSpeech: TextToSpeech? = null
+    private var ttsReady = false
+    private var pendingSpeech: String? = null
+    private var activeExplanationUtteranceId: String? = null
+    private var explanationUtteranceGeneration = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -138,6 +193,925 @@ class SonjuAccessibilityService : AccessibilityService() {
         }
         instance = this
         epoch.incrementAndGet()
+        initializeTextToSpeech()
+        showQuickVoiceButton()
+    }
+
+    private fun initializeTextToSpeech() {
+        if (textToSpeech != null) return
+        textToSpeech = TextToSpeech(this) { status ->
+            ttsReady = status == TextToSpeech.SUCCESS &&
+                textToSpeech?.setLanguage(Locale.KOREAN) != TextToSpeech.LANG_MISSING_DATA
+            if (ttsReady) {
+                textToSpeech?.setOnUtteranceProgressListener(
+                    object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) = Unit
+
+                        override fun onDone(utteranceId: String?) {
+                            finishExplanationSpeech(utteranceId)
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            finishExplanationSpeech(utteranceId)
+                        }
+                    },
+                )
+                pendingSpeech?.let(::speakExplanation)
+                pendingSpeech = null
+            }
+        }
+    }
+
+    private fun speakExplanation(message: String) {
+        val safeMessage = message.take(1_500)
+        if (!ttsReady) {
+            pendingSpeech = safeMessage
+            initializeTextToSpeech()
+            return
+        }
+        val utteranceId = "sonju-screen-explanation-${++explanationUtteranceGeneration}"
+        activeExplanationUtteranceId = utteranceId
+        val result = textToSpeech?.speak(
+            safeMessage,
+            TextToSpeech.QUEUE_FLUSH,
+            null,
+            utteranceId,
+        )
+        if (result == TextToSpeech.ERROR) finishExplanationSpeech(utteranceId)
+    }
+
+    private fun finishExplanationSpeech(utteranceId: String?) {
+        mainHandler.post {
+            if (utteranceId == null || activeExplanationUtteranceId != utteranceId) return@post
+            activeExplanationUtteranceId = null
+            if (voicePanel != null) {
+                dismissVoicePanel(resumeWakeWord = true)
+            } else {
+                resumeWakeWordListening()
+            }
+        }
+    }
+
+    private fun stopExplanationSpeech() {
+        pendingSpeech = null
+        if (activeExplanationUtteranceId != null) {
+            activeExplanationUtteranceId = null
+            textToSpeech?.stop()
+        }
+    }
+
+    private fun showQuickVoiceButton() {
+        if (quickVoiceButton != null) return
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val size = dp(56)
+        val displayWidth = resources.displayMetrics.widthPixels
+        val displayHeight = resources.displayMetrics.heightPixels
+        val preferences = getSharedPreferences(CONSENT_PREFERENCES, MODE_PRIVATE)
+        val button = ImageButton(this).apply {
+            contentDescription = getString(R.string.quick_voice_button_description)
+            setImageResource(R.drawable.ic_mic)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(ContextCompat.getColor(this@SonjuAccessibilityService, R.color.sonju_green))
+                setStroke(dp(2), Color.WHITE)
+            }
+            elevation = dp(8).toFloat()
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+        val params = WindowManager.LayoutParams(
+            size,
+            size,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = preferences.getInt(
+                QUICK_VOICE_X_KEY,
+                displayWidth - size - dp(8),
+            ).coerceIn(0, (displayWidth - size).coerceAtLeast(0))
+            y = preferences.getInt(
+                QUICK_VOICE_Y_KEY,
+                (displayHeight - size) / 2,
+            ).coerceIn(0, (displayHeight - size).coerceAtLeast(0))
+        }
+        button.setOnClickListener { requestVoiceWake() }
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+        var downRawX = 0f
+        var downRawY = 0f
+        var downWindowX = 0
+        var downWindowY = 0
+        var dragged = false
+        button.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    downWindowX = params.x
+                    downWindowY = params.y
+                    dragged = false
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val deltaX = event.rawX - downRawX
+                    val deltaY = event.rawY - downRawY
+                    if (!dragged && (kotlin.math.abs(deltaX) > touchSlop ||
+                            kotlin.math.abs(deltaY) > touchSlop)
+                    ) dragged = true
+                    if (dragged) {
+                        params.x = (downWindowX + deltaX.toInt())
+                            .coerceIn(0, (displayWidth - size).coerceAtLeast(0))
+                        params.y = (downWindowY + deltaY.toInt())
+                            .coerceIn(0, (displayHeight - size).coerceAtLeast(0))
+                        runCatching { windowManager.updateViewLayout(button, params) }
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    if (dragged) {
+                        preferences.edit()
+                            .putInt(QUICK_VOICE_X_KEY, params.x)
+                            .putInt(QUICK_VOICE_Y_KEY, params.y)
+                            .apply()
+                    } else {
+                        view.performClick()
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+        runCatching { windowManager.addView(button, params) }
+            .onSuccess {
+                overlayWindowManager = windowManager
+                quickVoiceButton = button
+            }
+    }
+
+    private fun hideQuickVoiceButton() {
+        val button = quickVoiceButton ?: return
+        quickVoiceButton = null
+        runCatching { overlayWindowManager?.removeView(button) }
+        overlayWindowManager = null
+    }
+
+    private fun showTouchIndicator(node: AccessibilityNodeInfo) {
+        val bounds = Rect().also(node::getBoundsInScreen)
+        if (bounds.isEmpty) return
+        showTouchIndicator(bounds.exactCenterX(), bounds.exactCenterY())
+    }
+
+    private fun showTouchIndicator(x: Float, y: Float) {
+        val displayWidth = resources.displayMetrics.widthPixels
+        val displayHeight = resources.displayMetrics.heightPixels
+        if (x !in 0f..displayWidth.toFloat() || y !in 0f..displayHeight.toFloat()) return
+
+        val windowManager = overlayWindowManager
+            ?: (getSystemService(WINDOW_SERVICE) as WindowManager).also {
+                overlayWindowManager = it
+            }
+        touchIndicator?.let { previous ->
+            runCatching { windowManager.removeView(previous) }
+        }
+        val size = dp(22)
+        val marker = View(this).apply {
+            contentDescription = "손주 터치 위치"
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.RED)
+                setStroke(dp(2), Color.WHITE)
+            }
+            elevation = dp(12).toFloat()
+        }
+        val params = WindowManager.LayoutParams(
+            size,
+            size,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            this.x = x.toInt() - size / 2
+            this.y = y.toInt() - size / 2
+        }
+        val generation = ++touchIndicatorGeneration
+        runCatching { windowManager.addView(marker, params) }
+            .onFailure { return }
+        touchIndicator = marker
+        mainHandler.postDelayed(
+            {
+                if (touchIndicatorGeneration == generation && touchIndicator === marker) {
+                    touchIndicator = null
+                    runCatching { windowManager.removeView(marker) }
+                }
+            },
+            TOUCH_INDICATOR_DURATION_MILLIS,
+        )
+    }
+
+    private fun hideTouchIndicator() {
+        touchIndicatorGeneration += 1
+        val marker = touchIndicator ?: return
+        touchIndicator = null
+        runCatching {
+            (overlayWindowManager ?: getSystemService(WINDOW_SERVICE) as WindowManager)
+                .removeView(marker)
+        }
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun showVoicePanel(fromOverlay: Boolean) {
+        if (voicePanel != null) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Toast.makeText(this, R.string.wake_word_permission_denied, Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            Toast.makeText(this, R.string.voice_unavailable, Toast.LENGTH_LONG).show()
+            return
+        }
+
+        pauseWakeWordListening()
+        val windowManager = overlayWindowManager
+            ?: (getSystemService(WINDOW_SERVICE) as WindowManager).also {
+                overlayWindowManager = it
+            }
+        val panel = LayoutInflater.from(this).inflate(R.layout.activity_voice_command, null).apply {
+            findViewById<TextView>(R.id.cancelVoiceCommand).setOnClickListener {
+                retryVoicePanel()
+            }
+            setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                    dismissVoicePanelFromOutside(cancelBaemin = false)
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        val params = WindowManager.LayoutParams(
+            resources.displayMetrics.widthPixels - dp(24),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = dp(18)
+        }
+        runCatching { windowManager.addView(panel, params) }
+            .onFailure {
+                resumeWakeWordListening()
+                return
+            }
+        voicePanel = panel
+        voicePanelTranscript = panel.findViewById(R.id.liveTranscript)
+        voicePanelFromOverlay = fromOverlay
+        quickVoiceButton?.visibility = View.GONE
+        beginVoicePanelListening()
+    }
+
+    private fun beginVoicePanelListening() {
+        if (voicePanel == null) return
+        stopVoicePanelRecognizer()
+        voicePanelCommandDispatched = false
+        voicePanelAccumulatedCommand = ""
+        voicePanelWaitingForContinuation = false
+        mainHandler.postDelayed(::startVoicePanelListening, VOICE_PANEL_START_DELAY_MILLIS)
+        resetVoicePanelTimeout()
+    }
+
+    private val voicePanelTimeoutRunnable = Runnable {
+        if (!voicePanelCommandDispatched && voicePanel != null) {
+            if (voicePanelAccumulatedCommand.isNotBlank()) {
+                finalizeVoicePanelCommand()
+            } else {
+                showVoicePanelFailure(R.string.voice_no_result)
+            }
+        }
+    }
+
+    private val voicePanelFinalizeRunnable = Runnable { finalizeVoicePanelCommand() }
+
+    private fun resetVoicePanelTimeout() {
+        mainHandler.removeCallbacks(voicePanelTimeoutRunnable)
+        mainHandler.postDelayed(voicePanelTimeoutRunnable, VOICE_PANEL_TIMEOUT_MILLIS)
+    }
+
+    private fun startVoicePanelListening() {
+        if (voicePanel == null || voicePanelCommandDispatched) return
+        val speechRecognizer = runCatching {
+            SpeechRecognizer.createSpeechRecognizer(this).also {
+                it.setRecognitionListener(voicePanelRecognitionListener)
+            }
+        }.getOrElse {
+            showVoicePanelFailure(R.string.voice_unavailable)
+            return
+        }
+        voicePanelRecognizer = speechRecognizer
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                VOICE_COMPLETE_SILENCE_MILLIS,
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                VOICE_POSSIBLY_COMPLETE_SILENCE_MILLIS,
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                VOICE_MINIMUM_LENGTH_MILLIS,
+            )
+        }
+        runCatching { speechRecognizer.startListening(intent) }
+            .onFailure { showVoicePanelFailure(R.string.voice_unavailable) }
+    }
+
+    private val voicePanelRecognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            if (voicePanelAccumulatedCommand.isBlank()) {
+                voicePanelTranscript?.setText(R.string.live_voice_listening)
+            }
+        }
+
+        override fun onBeginningOfSpeech() {
+            voicePanelWaitingForContinuation = false
+            mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
+            resetVoicePanelTimeout()
+        }
+        override fun onRmsChanged(rmsdB: Float) = Unit
+        override fun onBufferReceived(buffer: ByteArray?) = Unit
+        override fun onEndOfSpeech() = Unit
+        override fun onPartialResults(partialResults: Bundle?) {
+            mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
+            resetVoicePanelTimeout()
+            updateVoicePanelText(partialResults)
+        }
+
+        override fun onResults(results: Bundle?) {
+            val segment = firstRecognizedText(results)
+            if (segment == null) {
+                if (voicePanelAccumulatedCommand.isNotBlank()) {
+                    finalizeVoicePanelCommand()
+                    return
+                }
+                showVoicePanelFailure(R.string.voice_no_result)
+                return
+            }
+            voicePanelAccumulatedCommand = mergeVoiceSegments(
+                voicePanelAccumulatedCommand,
+                segment,
+            )
+            voicePanelTranscript?.text = voicePanelAccumulatedCommand
+            voicePanelWaitingForContinuation = true
+            stopVoicePanelRecognizer()
+            mainHandler.postDelayed(::startVoicePanelListening, VOICE_CONTINUATION_RESTART_MILLIS)
+            mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
+            mainHandler.postDelayed(
+                voicePanelFinalizeRunnable,
+                VOICE_CONTINUATION_GRACE_MILLIS,
+            )
+        }
+
+        override fun onError(error: Int) {
+            if (voicePanelCommandDispatched) return
+            if (voicePanelWaitingForContinuation) return
+            if (voicePanelAccumulatedCommand.isNotBlank()) {
+                finalizeVoicePanelCommand()
+            } else {
+                showVoicePanelFailure(R.string.voice_no_result)
+            }
+        }
+        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    }
+
+    private fun updateVoicePanelText(results: Bundle?) {
+        firstRecognizedText(results)?.let { partial ->
+            voicePanelTranscript?.text = mergeVoiceSegments(
+                voicePanelAccumulatedCommand,
+                partial,
+            )
+        }
+    }
+
+    private fun mergeVoiceSegments(accumulated: String, segment: String): String {
+        val previous = accumulated.trim()
+        val current = segment.trim()
+        return when {
+            previous.isBlank() -> current
+            current.isBlank() -> previous
+            current.startsWith(previous, ignoreCase = true) -> current
+            previous.endsWith(current, ignoreCase = true) -> previous
+            else -> "$previous $current"
+        }.take(1_000)
+    }
+
+    private fun finalizeVoicePanelCommand() {
+        if (voicePanelCommandDispatched || voicePanel == null) return
+        val command = voicePanelAccumulatedCommand.trim()
+        if (command.isBlank()) {
+            showVoicePanelFailure(R.string.voice_no_result)
+            return
+        }
+        voicePanelCommandDispatched = true
+        voicePanelWaitingForContinuation = false
+        mainHandler.removeCallbacks(voicePanelTimeoutRunnable)
+        mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
+        voicePanelTranscript?.text = command
+        val capturedFromOverlay = voicePanelFromOverlay
+        stopVoicePanelRecognizer()
+        mainHandler.postDelayed({
+            processOverlayCommand(command, capturedFromOverlay)
+        }, VOICE_PANEL_RESULT_DELAY_MILLIS)
+    }
+
+    private fun firstRecognizedText(results: Bundle?): String? = results
+        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        ?.firstOrNull()
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.take(500)
+
+    private fun showVoicePanelFailure(message: Int) {
+        val panel = voicePanel ?: return
+        voicePanelCommandDispatched = true
+        stopVoicePanelRecognizer()
+        voicePanelTranscript?.setText(message)
+        panel.findViewById<TextView>(R.id.cancelVoiceCommand).apply {
+            setText(R.string.voice_retry)
+            setOnClickListener {
+                retryVoicePanel()
+            }
+        }
+    }
+
+    private fun retryVoicePanel() {
+        if (voicePanel == null) return
+        dismissVoicePanel(resumeWakeWord = false)
+        mainHandler.post { requestVoiceWake() }
+    }
+
+    private fun dismissVoicePanelFromOutside(cancelBaemin: Boolean) {
+        overlayCommandGeneration += 1
+        overlayGeminiPlanner.cancelPending()
+        overlayCaptureInProgress = false
+        overlayVoiceCommand = null
+        clearProactiveSearch()
+        clearPendingOverlayContext()
+        dismissVoicePanel(resumeWakeWord = false)
+        if (cancelBaemin) cancelBaeminOrder()
+        resumeWakeWordListening()
+    }
+
+    private fun dismissVoicePanel(resumeWakeWord: Boolean) {
+        mainHandler.removeCallbacks(voicePanelTimeoutRunnable)
+        mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
+        stopVoicePanelRecognizer()
+        stopExplanationSpeech()
+        voicePanelConfirmButton = null
+        voicePanelWaitingForContinuation = false
+        val panel = voicePanel
+        voicePanel = null
+        voicePanelTranscript = null
+        voicePanelFromOverlay = false
+        panel?.let { runCatching { overlayWindowManager?.removeView(it) } }
+        if (!overlayCommandExecutionActive) quickVoiceButton?.visibility = View.VISIBLE
+        if (resumeWakeWord) resumeWakeWordListening()
+    }
+
+    private fun stopVoicePanelRecognizer() {
+        voicePanelRecognizer?.runCatching {
+            cancel()
+            destroy()
+        }
+        voicePanelRecognizer = null
+    }
+
+    private fun processOverlayCommand(command: String, fromOverlay: Boolean) {
+        if (voicePanel == null || overlayCommandExecutionActive) return
+        if (proactiveSearchCommand != null && proactiveSearchCommand != command) {
+            clearProactiveSearch()
+        }
+        if (fromOverlay && overlayCaptureInProgress) {
+            overlayVoiceCommand = command
+            voicePanelTranscript?.text = "말씀을 들었어요. 현재 화면을 확인하고 있어요…"
+            return
+        }
+        val generation = ++overlayCommandGeneration
+        overlayGeminiPlanner.cancelPending()
+        voicePanelTranscript?.text = "현재 화면에서 안전한 실행 방법을 확인하고 있어요…"
+
+        BaeminOrderRequestParser.parse(command)?.let { request ->
+            overlayCommandExecutionActive = true
+            dismissVoicePanel(resumeWakeWord = false)
+            val started = startBaeminOrder(request.query)
+            overlayCommandExecutionActive = false
+            quickVoiceButton?.visibility = View.VISIBLE
+            if (!started) {
+                deliverScreenExplanation(getString(R.string.baemin_unavailable))
+            } else {
+                resumeWakeWordListening()
+            }
+            return
+        }
+
+        SafetyPolicy.preflightCommand(command)?.let { assessment ->
+            showOverlayMessage(assessment.reason)
+            return
+        }
+        val context = if (fromOverlay) consumePendingOverlayContext() else null
+        if (fromOverlay && context == null) {
+            showOverlayMessage(getString(R.string.overlay_context_expired))
+            return
+        }
+        val snapshot = context?.snapshot ?: UiSnapshot.empty()
+        if (ScreenExplainer.isExplanationRequest(command)) {
+            val appLabel = runCatching {
+                @Suppress("DEPRECATION")
+                packageManager.getApplicationLabel(
+                    packageManager.getApplicationInfo(snapshot.packageName, 0),
+                ).toString()
+            }.getOrDefault(snapshot.windowTitle.orEmpty())
+            val browserUrl = ScreenExplainer.detectBrowserUrl(snapshot)
+            val fallback = ScreenExplainer.explain(command, appLabel, snapshot, browserUrl)
+            val screenshot = context?.visionSemanticMap
+                ?.takeIf { context.rawScreenshot && it.isNotBlank() }
+            if (screenshot != null && overlayGeminiPlanner.isConfigured) {
+                voicePanelTranscript?.text = "현재 화면을 보고 사용법을 설명하고 있어요…"
+                overlayGeminiPlanner.explainScreenAsync(
+                    command,
+                    snapshot,
+                    screenshot,
+                    browserUrl,
+                ) { result ->
+                    mainHandler.post {
+                        if (generation != overlayCommandGeneration || voicePanel == null) return@post
+                        deliverScreenExplanation(result.getOrDefault(fallback))
+                    }
+                }
+            } else {
+                deliverScreenExplanation(fallback)
+            }
+            return
+        }
+        val localPlan = RuleBasedPlanner.plan(command, snapshot)
+        if (localPlan != null) {
+            handleOverlayPlan(command, snapshot, localPlan)
+            return
+        }
+        SafetyPolicy.highRiskScreenReason(
+            snapshot,
+            allowTruncated = true,
+        )?.let { reason ->
+            showOverlayMessage(reason)
+            return
+        }
+        overlayTaskMemory.recall(command, snapshot)?.let { rememberedPlan ->
+            handleOverlayPlan(command, snapshot, rememberedPlan)
+            return
+        }
+        if (!overlayGeminiPlanner.isConfigured) {
+            showOverlayMessage(getString(R.string.api_missing))
+            return
+        }
+
+        overlayGeminiPlanner.planAsync(
+            command = command,
+            snapshot = snapshot,
+            imageJpegBase64 = context?.visionSemanticMap,
+            rawScreenshot = context?.rawScreenshot == true,
+        ) { result ->
+            mainHandler.post {
+                if (generation != overlayCommandGeneration || voicePanel == null) return@post
+                result.fold(
+                    onSuccess = { plan ->
+                        val rawScreenshot = context?.rawScreenshot == true
+                        val screenshot = context?.visionSemanticMap
+                        if (rawScreenshot && !screenshot.isNullOrBlank() &&
+                            needsVisualFallback(plan, snapshot)
+                        ) {
+                            voicePanelTranscript?.text =
+                                "화면에서 버튼을 찾지 못해 캡처로 다시 확인하고 있어요…"
+                            overlayGeminiPlanner.planAsync(
+                                command = command,
+                                snapshot = snapshot,
+                                imageJpegBase64 = screenshot,
+                                rawScreenshot = true,
+                                preferVisualClick = true,
+                            ) { visualResult ->
+                                mainHandler.post {
+                                    if (generation != overlayCommandGeneration ||
+                                        voicePanel == null
+                                    ) return@post
+                                    visualResult.fold(
+                                        onSuccess = { visualPlan ->
+                                            handleOverlayPlan(command, snapshot, visualPlan)
+                                        },
+                                        onFailure = {
+                                            if (!retryTransientPlanning(command)) {
+                                                showOverlayMessage(getString(R.string.generic_error))
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        } else {
+                            handleOverlayPlan(command, snapshot, plan)
+                        }
+                    },
+                    onFailure = {
+                        if (!retryTransientPlanning(command)) {
+                            showOverlayMessage(getString(R.string.generic_error))
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    private fun needsVisualFallback(plan: AgentPlan, snapshot: UiSnapshot): Boolean {
+        val actions = plan.actions.filterNot { it.type == ActionType.FINISH }
+        if (actions.isEmpty()) return true
+        val action = actions.singleOrNull() ?: return false
+        return action.type == ActionType.CLICK && SafetyPolicy.validateClick(action, snapshot) == null
+    }
+
+    private fun handleOverlayPlan(command: String, snapshot: UiSnapshot, plan: AgentPlan) {
+        transientPlanningRetryCount = 0
+        val assessment = SafetyPolicy.evaluate(command, plan, snapshot)
+        when (assessment.decision) {
+            SafetyDecision.BLOCK -> {
+                val hasNoAction = plan.actions.none { it.type != ActionType.FINISH }
+                if (plan.goal == REMEMBERED_PLAN_GOAL) {
+                    overlayTaskMemory.forget(command, snapshot)
+                }
+                val recoverableTargetFailure = plan.actions.any { action ->
+                    action.type in setOf(ActionType.CLICK, ActionType.VISUAL_CLICK)
+                } && assessment.reason.containsAny(
+                    "찾지 못",
+                    "확인하지 못",
+                    "정확히 검증하지 못",
+                )
+                if ((hasNoAction || recoverableTargetFailure) &&
+                    attemptExploratoryScroll(command, snapshot)
+                ) return
+
+                val attempts = proactiveSearchStepCount
+                if (hasNoAction || attempts > 0) {
+                    clearProactiveSearch()
+                    val message = if (attempts > 0) {
+                        "화면을 ${attempts}번 더 이동하고 캡처도 확인했지만 요청한 항목을 " +
+                            "찾지 못했어요. ${assessment.reason}"
+                    } else {
+                        "접근성 구조와 화면 캡처를 확인했지만 요청한 항목을 찾지 못했어요. " +
+                            assessment.reason
+                    }
+                    deliverScreenExplanation(message)
+                } else {
+                    clearProactiveSearch()
+                    showOverlayMessage(assessment.reason)
+                }
+            }
+            SafetyDecision.ALLOW -> executeOverlayPlan(command, snapshot, plan)
+            SafetyDecision.REQUIRE_CONFIRMATION -> showPlanConfirmation(
+                command,
+                snapshot,
+                plan,
+                assessment,
+            )
+        }
+    }
+
+    private fun attemptExploratoryScroll(command: String, snapshot: UiSnapshot): Boolean {
+        if (proactiveSearchStepCount >= MAX_PROACTIVE_SEARCH_STEPS ||
+            uniqueLeafScrollablePath(snapshot) == null
+        ) {
+            return false
+        }
+        val plan = AgentPlan(
+            goal = command,
+            summary = "화면 아래쪽에서 요청한 항목을 더 찾아볼게요.",
+            modelRisk = RiskLevel.LOW,
+            confidence = 1.0,
+            actions = listOf(
+                AgentAction(ActionType.SCROLL_DOWN, "화면 아래쪽을 더 확인합니다."),
+                AgentAction(ActionType.FINISH, "새 화면을 다시 확인합니다."),
+            ),
+            source = PlanSource.LOCAL_RULE,
+            continueAfterAction = true,
+        )
+        executeOverlayPlan(command, snapshot, plan)
+        return true
+    }
+
+    private fun clearProactiveSearch() {
+        proactiveSearchCommand = null
+        proactiveSearchStepCount = 0
+        transientPlanningRetryCount = 0
+    }
+
+    private fun retryTransientPlanning(command: String): Boolean {
+        if (transientPlanningRetryCount >= MAX_TRANSIENT_PLANNING_RETRIES) return false
+        val scheduled = scheduleProactiveReplan(
+            command,
+            "화면 분석 응답이 불완전해 현재 화면을 다시 캡처하고 있어요…",
+        )
+        if (scheduled) transientPlanningRetryCount += 1
+        return scheduled
+    }
+
+    private fun scheduleProactiveReplan(command: String, status: String): Boolean {
+        if (proactiveSearchStepCount >= MAX_PROACTIVE_SEARCH_STEPS) return false
+        proactiveSearchCommand = command
+        proactiveSearchStepCount += 1
+        voicePanelTranscript?.text = status
+        mainHandler.postDelayed(
+            { requestVoiceWake(command) },
+            PROACTIVE_SEARCH_SETTLE_MILLIS,
+        )
+        return true
+    }
+
+    private fun String.containsAny(vararg values: String): Boolean =
+        values.any { contains(it, ignoreCase = true) }
+
+    private fun showPlanConfirmation(
+        command: String,
+        snapshot: UiSnapshot,
+        plan: AgentPlan,
+        assessment: SafetyAssessment,
+    ) {
+        val actions = plan.actions.filterNot { it.type == ActionType.FINISH }
+            .joinToString("\n") { action ->
+                val target = action.target?.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
+                "${action.description}$target"
+            }
+        val message = buildString {
+            appendLine(plan.summary)
+            if (actions.isNotBlank()) appendLine(actions)
+            append(assessment.reason)
+        }.take(1_200)
+        showVoicePanelConfirmation(message, getString(R.string.confirm_execute)) {
+            executeOverlayPlan(command, snapshot, plan)
+        }
+    }
+
+    private fun showVoicePanelConfirmation(
+        message: String,
+        confirmLabel: String,
+        onConfirm: () -> Unit,
+    ) {
+        val panel = voicePanel as? LinearLayout ?: return
+        voicePanelTranscript?.text = message
+        voicePanelConfirmButton?.let { existing ->
+            (existing.parent as? LinearLayout)?.removeView(existing)
+        }
+        val confirm = TextView(this).apply {
+            text = confirmLabel
+            contentDescription = confirmLabel
+            gravity = Gravity.CENTER
+            setPadding(dp(16), 0, dp(16), 0)
+            setTextColor(ContextCompat.getColor(this@SonjuAccessibilityService, R.color.sonju_green))
+            textSize = 17f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dp(48),
+            ).apply { gravity = Gravity.END }
+            setOnClickListener {
+                isEnabled = false
+                onConfirm()
+            }
+        }
+        voicePanelConfirmButton = confirm
+        panel.addView(confirm)
+    }
+
+    private fun executeOverlayPlan(command: String, snapshot: UiSnapshot, plan: AgentPlan) {
+        overlayCommandExecutionActive = true
+        dismissVoicePanel(resumeWakeWord = false)
+        quickVoiceButton?.visibility = View.GONE
+        executePlan(
+            plan = plan,
+            expectedSnapshot = snapshot,
+            returnToPreviousApp = false,
+        ) { result ->
+            overlayCommandExecutionActive = false
+            quickVoiceButton?.visibility = View.VISIBLE
+            if (result.success && plan.continueAfterAction) {
+                if (proactiveSearchStepCount >= MAX_PROACTIVE_SEARCH_STEPS) {
+                    val attempts = proactiveSearchStepCount
+                    clearProactiveSearch()
+                    deliverScreenExplanation(
+                        "화면을 ${attempts}번 확인했지만 요청한 항목을 찾지 못해 멈췄어요.",
+                    )
+                    return@executePlan
+                }
+                proactiveSearchCommand = command
+                proactiveSearchStepCount += 1
+                mainHandler.postDelayed(
+                    { requestVoiceWake(command) },
+                    PROACTIVE_SEARCH_SETTLE_MILLIS,
+                )
+                return@executePlan
+            }
+            if (!result.success && shouldReplanAfterExecutionFailure(plan, result) &&
+                scheduleProactiveReplan(
+                    command,
+                    "버튼 위치나 화면이 달라져 캡처와 화면 구조를 다시 확인하고 있어요…",
+                )
+            ) {
+                overlayTaskMemory.forget(command, snapshot)
+                return@executePlan
+            }
+            if (result.success) overlayTaskMemory.remember(command, snapshot, plan)
+            clearProactiveSearch()
+            val message = if (result.success) {
+                plan.summary.ifBlank { getString(R.string.action_completed) }
+            } else {
+                result.message.ifBlank { getString(R.string.action_failed) }
+            }
+            if (!result.success) {
+                deliverScreenExplanation(message)
+                return@executePlan
+            }
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            resumeWakeWordListening()
+        }
+    }
+
+    private fun shouldReplanAfterExecutionFailure(
+        plan: AgentPlan,
+        result: ExecutionResult,
+    ): Boolean {
+        if (result.message.containsAny("사용자 요청", "실행 시간이 길어져")) return false
+        val action = plan.actions.singleOrNull { it.type != ActionType.FINISH } ?: return false
+        return action.type in setOf(
+            ActionType.CLICK,
+            ActionType.VISUAL_CLICK,
+            ActionType.SCROLL_DOWN,
+            ActionType.SCROLL_UP,
+        ) || result.message.containsAny(
+            "화면이 바뀌어",
+            "화면 구조를 다시 확인할 수 없어",
+            "화면 요소를 확실히 찾지 못해",
+        )
+    }
+
+    private fun showOverlayMessage(message: String) {
+        val panel = voicePanel
+        if (panel == null) {
+            Toast.makeText(this, message.take(500), Toast.LENGTH_LONG).show()
+            resumeWakeWordListening()
+            return
+        }
+        voicePanelTranscript?.text = message.take(1_000)
+        voicePanelConfirmButton?.let { existing ->
+            (existing.parent as? LinearLayout)?.removeView(existing)
+        }
+        voicePanelConfirmButton = null
+        mainHandler.postDelayed({
+            if (voicePanel === panel) dismissVoicePanel(resumeWakeWord = true)
+        }, OVERLAY_MESSAGE_CLOSE_DELAY_MILLIS)
+    }
+
+    private fun deliverScreenExplanation(explanation: String) {
+        voicePanelTranscript?.text = explanation
+        speakExplanation(explanation)
+    }
+
+    private fun pauseWakeWordListening() {
+        sendWakeWordAction(WakeWordService.ACTION_PAUSE)
+    }
+
+    private fun resumeWakeWordListening() {
+        sendWakeWordAction(WakeWordService.ACTION_RESUME)
+    }
+
+    private fun sendWakeWordAction(action: String) {
+        if (!WakeWordService.running) return
+        runCatching {
+            startService(Intent(this, WakeWordService::class.java).setAction(action))
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -286,6 +1260,16 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         stopCurrentExecution()
+        overlayCommandGeneration += 1
+        overlayGeminiPlanner.close()
+        textToSpeech?.stop()
+        textToSpeech?.shutdown()
+        textToSpeech = null
+        ttsReady = false
+        pendingSpeech = null
+        dismissVoicePanel(resumeWakeWord = false)
+        hideTouchIndicator()
+        hideQuickVoiceButton()
         mainHandler.removeCallbacksAndMessages(null)
         pendingSnapshotCapture = null
         snapshotExecutor.shutdownNow()
@@ -298,7 +1282,6 @@ class SonjuAccessibilityService : AccessibilityService() {
         lastObservedWindowClass = null
         snapshotCaptureInFlight = false
         overlayCaptureInProgress = false
-        overlayAutoStartVoice = false
         overlayVoiceCommand = null
         if (instance === this) instance = null
         super.onDestroy()
@@ -542,9 +1525,10 @@ class SonjuAccessibilityService : AccessibilityService() {
         activeExecution = null
         executionGeneration += 1
         executionActive = false
+        overlayCommandExecutionActive = false
         overlayCaptureInProgress = false
-        overlayAutoStartVoice = false
         overlayVoiceCommand = null
+        clearProactiveSearch()
         if (baeminOrderSession != null) cancelBaeminOrder()
         clearPendingOverlayContext()
         invalidateObservedSnapshot()
@@ -593,12 +1577,11 @@ class SonjuAccessibilityService : AccessibilityService() {
         pendingBaeminCommit = null
         session.reviewLaunched = false
         session.actionInFlight = true
-        performGlobalAction(GLOBAL_ACTION_BACK)
         mainHandler.postDelayed(
             {
                 performBaeminCommit(session, pending)
             },
-            BAEMIN_RETURN_DELAY_MILLIS,
+            BAEMIN_OVERLAY_DISMISS_DELAY_MILLIS,
         )
     }
 
@@ -696,7 +1679,10 @@ class SonjuAccessibilityService : AccessibilityService() {
                     val dispatched = when (action) {
                         BaeminNodeAction.CLICK -> node?.takeIf {
                             it.isVisibleToUser && it.isEnabled && it.isClickable
-                        }?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                        }?.let { clickable ->
+                            showTouchIndicator(clickable)
+                            clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        } == true
 
                         BaeminNodeAction.SET_TEXT -> node?.takeIf {
                             it.isVisibleToUser && it.isEnabled && it.isEditable && !it.isPassword
@@ -781,7 +1767,10 @@ class SonjuAccessibilityService : AccessibilityService() {
                     ) nodeAtPath(root, pending.clickablePath) else null
                     val dispatched = node?.takeIf {
                         it.isVisibleToUser && it.isEnabled && it.isClickable && !it.isPassword
-                    }?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                    }?.let { clickable ->
+                        showTouchIndicator(clickable)
+                        clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    } == true
                     session.actionInFlight = false
                     if (!dispatched) {
                         finishBaeminOrder("확인하는 동안 주문 화면이 바뀌어 마지막 버튼을 누르지 않았어요.", false)
@@ -802,37 +1791,102 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
 
     private fun launchBaeminReview(summary: String) {
-        val intent = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra(EXTRA_BAEMIN_REVIEW, summary.take(2_000))
-        startActivity(intent)
+        showBaeminReviewOverlay(summary.take(2_000))
     }
 
     private fun finishBaeminOrder(message: String, success: Boolean) {
         cancelBaeminOrder()
-        val intent = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra(EXTRA_BAEMIN_STATUS, message.take(500))
-            .putExtra(EXTRA_BAEMIN_STATUS_SUCCESS, success)
-        startActivity(intent)
+        if (voicePanel != null) dismissVoicePanel(resumeWakeWord = false)
+        Toast.makeText(this, message.take(500), Toast.LENGTH_LONG).show()
+        quickVoiceButton?.visibility = View.VISIBLE
+        resumeWakeWordListening()
+    }
+
+    private fun showBaeminReviewOverlay(summary: String) {
+        if (voicePanel != null) dismissVoicePanel(resumeWakeWord = false)
+        pauseWakeWordListening()
+        val windowManager = overlayWindowManager
+            ?: (getSystemService(WINDOW_SERVICE) as WindowManager).also {
+                overlayWindowManager = it
+            }
+        val panel = LayoutInflater.from(this).inflate(R.layout.activity_voice_command, null)
+        panel.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                dismissVoicePanelFromOutside(cancelBaemin = true)
+                true
+            } else {
+                false
+            }
+        }
+        val params = WindowManager.LayoutParams(
+            resources.displayMetrics.widthPixels - dp(24),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = dp(18)
+        }
+        runCatching { windowManager.addView(panel, params) }
+            .onFailure {
+                cancelBaeminOrder()
+                Toast.makeText(this, summary, Toast.LENGTH_LONG).show()
+                resumeWakeWordListening()
+                return
+            }
+        voicePanel = panel
+        voicePanelTranscript = panel.findViewById<TextView>(R.id.liveTranscript).apply {
+            text = summary
+        }
+        voicePanelCommandDispatched = true
+        voicePanelFromOverlay = false
+        quickVoiceButton?.visibility = View.GONE
+        panel.findViewById<TextView>(R.id.cancelVoiceCommand).apply {
+            setText(R.string.baemin_cancel_order)
+            setOnClickListener {
+                dismissVoicePanel(resumeWakeWord = false)
+                cancelBaeminOrder()
+                Toast.makeText(
+                    this@SonjuAccessibilityService,
+                    R.string.baemin_cancel_order,
+                    Toast.LENGTH_SHORT,
+                ).show()
+                resumeWakeWordListening()
+            }
+        }
+        showVoicePanelConfirmation(
+            message = summary,
+            confirmLabel = getString(R.string.baemin_confirm_order),
+        ) {
+            dismissVoicePanel(resumeWakeWord = false)
+            confirmBaeminCommit()
+        }
     }
 
     fun requestVoiceWake(command: String? = null) {
         mainHandler.post {
-            if (instance !== this || overlayCaptureInProgress) return@post
-            val safeCommand = command?.trim()?.takeIf(String::isNotBlank)?.take(500)
+            if (instance !== this || overlayCaptureInProgress || overlayCommandExecutionActive) {
+                return@post
+            }
+            val safeCommand = command?.trim()?.takeIf(String::isNotBlank)?.take(1_000)
             val activePackage = bestAvailableApplicationRoot()?.packageName?.toString().orEmpty()
             if (activePackage.isBlank() || activePackage == packageName) {
-                launchCommandActivity(
-                    autoStartVoice = safeCommand == null,
+                routeOverlayVoice(
                     fromOverlay = false,
                     voiceCommand = safeCommand,
                 )
                 return@post
             }
-            overlayAutoStartVoice = safeCommand == null
             overlayVoiceCommand = safeCommand
             overlayCaptureInProgress = true
+            if (safeCommand == null) {
+                // The panel should react to the side button immediately. Screen capture continues
+                // concurrently, and a fast recognition result is held until that context is ready.
+                showVoicePanel(fromOverlay = true)
+            }
             captureOverlayContextAndLaunch(attempt = 0)
         }
     }
@@ -841,18 +1895,6 @@ class SonjuAccessibilityService : AccessibilityService() {
         if (!overlayCaptureInProgress) return
         val root = bestAvailableApplicationRoot()
         val activePackage = root?.packageName?.toString().orEmpty()
-        val cachedSnapshot = lastObservedApplicationSnapshot?.takeIf { observed ->
-            ContextLifetime.isFresh(
-                SystemClock.elapsedRealtime(),
-                observed.capturedAtElapsedRealtime,
-                OBSERVED_SNAPSHOT_TTL_MILLIS,
-            ) && observed.snapshot.packageName == activePackage
-        }?.snapshot?.let(::snapshotWithTrustedRoute)
-        if (cachedSnapshot != null) {
-            completeOverlayCapture(cachedSnapshot, attempt)
-            return
-        }
-
         if (root == null || activePackage.isBlank() || activePackage == packageName) {
             retryOverlayCapture(attempt)
             return
@@ -889,13 +1931,13 @@ class SonjuAccessibilityService : AccessibilityService() {
             )
         } else {
             overlayCaptureInProgress = false
-            overlayAutoStartVoice = false
             overlayVoiceCommand = null
-            Toast.makeText(
-                this,
-                "화면 정보를 읽지 못했어요. 잠시 후 ‘손주야’라고 다시 불러 주세요.",
-                Toast.LENGTH_LONG,
-            ).show()
+            val message = "화면 정보를 읽지 못했어요. 잠시 후 다시 시도해 주세요."
+            if (voicePanel != null) {
+                showOverlayMessage(message)
+            } else {
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -969,13 +2011,10 @@ class SonjuAccessibilityService : AccessibilityService() {
             { clearPendingOverlayContext(sessionId) },
             OVERLAY_CONTEXT_TTL_MILLIS,
         )
-        val autoStartVoice = overlayAutoStartVoice
         val voiceCommand = overlayVoiceCommand
-        overlayAutoStartVoice = false
         overlayVoiceCommand = null
         overlayCaptureInProgress = false
-        launchCommandActivity(
-            autoStartVoice = autoStartVoice,
+        routeOverlayVoice(
             fromOverlay = true,
             voiceCommand = voiceCommand,
         )
@@ -991,25 +2030,25 @@ class SonjuAccessibilityService : AccessibilityService() {
             mainExecutor,
             object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
-                    val source = runCatching {
-                        Bitmap.wrapHardwareBuffer(
-                            screenshot.hardwareBuffer,
-                            screenshot.colorSpace,
-                        )?.copy(Bitmap.Config.ARGB_8888, false)
-                    }.getOrNull()
-                    screenshot.hardwareBuffer.close()
-                    if (source == null) {
-                        callback(null)
-                        return
-                    }
+                    val hardwareBuffer = screenshot.hardwareBuffer
+                    val colorSpace = screenshot.colorSpace
                     runCatching {
                         snapshotExecutor.execute {
+                            val source = runCatching {
+                                Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                                    ?.copy(Bitmap.Config.ARGB_8888, false)
+                            }.getOrNull()
+                            hardwareBuffer.close()
+                            if (source == null) {
+                                mainHandler.post { callback(null) }
+                                return@execute
+                            }
                             val capture = runCatching { encodeVisualCapture(source) }.getOrNull()
                             source.recycle()
                             mainHandler.post { callback(capture) }
                         }
                     }.onFailure {
-                        source.recycle()
+                        hardwareBuffer.close()
                         callback(null)
                     }
                 }
@@ -1075,24 +2114,19 @@ class SonjuAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun launchCommandActivity(
-        autoStartVoice: Boolean,
+    private fun routeOverlayVoice(
         fromOverlay: Boolean,
         voiceCommand: String? = null,
     ) {
-        if (autoStartVoice && voiceCommand == null) {
-            startActivity(
-                Intent(this, VoiceCommandActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
+        if (voiceCommand.isNullOrBlank()) {
+            showVoicePanel(fromOverlay)
             return
         }
-        val intent = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra(EXTRA_FROM_OVERLAY, fromOverlay)
-            .putExtra(EXTRA_AUTO_START_VOICE, autoStartVoice)
-            .putExtra(EXTRA_VOICE_COMMAND, voiceCommand)
-        startActivity(intent)
+        if (voicePanel == null) showVoicePanel(fromOverlay)
+        voicePanelCommandDispatched = true
+        stopVoicePanelRecognizer()
+        voicePanelTranscript?.text = voiceCommand
+        processOverlayCommand(voiceCommand, fromOverlay)
     }
 
 
@@ -1330,7 +2364,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         startedAt: Long,
         callback: (Boolean) -> Unit,
     ) {
-        val expectedPath = VisualTargetResolver.resolveClickablePath(
+        val expectedPoint = VisualTargetResolver.resolveScreenPoint(
             expectedSnapshot,
             action.x,
             action.y,
@@ -1338,6 +2372,11 @@ class SonjuAccessibilityService : AccessibilityService() {
             callback(false)
             return
         }
+        val expectedPath = VisualTargetResolver.resolveClickablePath(
+            expectedSnapshot,
+            action.x,
+            action.y,
+        )
         if (!executionWithinDeadline(startedAt)) {
             callback(false)
             return
@@ -1372,15 +2411,32 @@ class SonjuAccessibilityService : AccessibilityService() {
                     action.x,
                     action.y,
                 )
-                if (livePath != expectedPath) {
+                if (expectedPath != null && livePath != expectedPath) {
                     callback(false)
                     return@liveCapture
                 }
-                val node = nodeAtPath(root, expectedPath)
-                callback(
-                    node != null && node.isVisibleToUser && node.isEnabled && node.isClickable &&
-                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK),
-                )
+                val node = expectedPath?.let { nodeAtPath(root, it) }
+                if (node != null && node.isVisibleToUser && node.isEnabled && node.isClickable) {
+                    performNodeClickWithGestureFallback(node) { dispatched ->
+                        if (dispatched) invalidateObservedSnapshot()
+                        callback(dispatched)
+                    }
+                } else {
+                    val livePoint = VisualTargetResolver.resolveScreenPoint(
+                        liveWithScreen,
+                        action.x,
+                        action.y,
+                    )
+                    if (livePoint == null || livePoint != expectedPoint) {
+                        callback(false)
+                        return@liveCapture
+                    }
+                    dispatchTapGesture(livePoint.first.toFloat(), livePoint.second.toFloat()) {
+                        dispatched ->
+                        if (dispatched) invalidateObservedSnapshot()
+                        callback(dispatched)
+                    }
+                }
             }
         }
     }
@@ -1474,9 +2530,13 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
 
     private fun launchInstalledApp(target: String): Boolean {
-        val normalized = target.trim().lowercase()
+        val normalized = normalizeAppLabel(target)
         if (normalized.isBlank()) return false
-        val acceptedLabels = APP_LABEL_ALIASES[normalized].orEmpty() + normalized
+        val acceptedLabels = (
+            APP_LABEL_ALIASES.entries.firstOrNull {
+                normalizeAppLabel(it.key) == normalized
+            }?.value.orEmpty() + target + normalized
+        ).map(::normalizeAppLabel).filter(String::isNotBlank).toSet()
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val activities = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             packageManager.queryIntentActivities(
@@ -1487,12 +2547,18 @@ class SonjuAccessibilityService : AccessibilityService() {
             @Suppress("DEPRECATION")
             packageManager.queryIntentActivities(launcherIntent, 0)
         }
-        val candidates = activities.filter { info ->
-            val label = info.loadLabel(packageManager)?.toString()?.trim()?.lowercase().orEmpty()
+        val launchers = activities.distinctBy { it.activityInfo?.packageName }
+        val exactMatches = launchers.filter { info ->
+            val label = normalizeAppLabel(info.loadLabel(packageManager)?.toString().orEmpty())
             val packageName = info.activityInfo?.packageName?.lowercase().orEmpty()
-            label in acceptedLabels || packageName == normalized
+            label in acceptedLabels || packageName == target.trim().lowercase()
         }
-        val match = candidates.distinctBy { it.activityInfo?.packageName }.singleOrNull() ?: return false
+        val match = exactMatches.singleOrNull() ?: launchers.filter { info ->
+            val label = normalizeAppLabel(info.loadLabel(packageManager)?.toString().orEmpty())
+            acceptedLabels.any { requested ->
+                requested.length >= 2 && (label.contains(requested) || requested.contains(label))
+            }
+        }.singleOrNull() ?: return false
         val packageName = match.activityInfo?.packageName ?: return false
         val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return false
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -1501,6 +2567,12 @@ class SonjuAccessibilityService : AccessibilityService() {
             true
         }.getOrDefault(false)
     }
+
+    private fun normalizeAppLabel(value: String): String = Normalizer.normalize(
+        value.trim().lowercase(),
+        Normalizer.Form.NFKC,
+    ).replace(Regex("[^\\p{L}\\p{Nd}]"), "")
+        .removeSuffix("앱")
 
     private fun validateExpectedScreenAsync(
         action: AgentAction,
@@ -1563,7 +2635,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         startedAt: Long,
         callback: (Boolean) -> Unit,
     ) {
-        captureLiveSnapshotAsync(generation) { liveSnapshot, root, dispatchEpoch ->
+        captureLiveSnapshotAsync(generation) { liveSnapshot, root, _ ->
             if (liveSnapshot == null || root == null ||
                 !sameVerifiedScreen(expectedSnapshot, liveSnapshot)
             ) {
@@ -1572,20 +2644,83 @@ class SonjuAccessibilityService : AccessibilityService() {
             }
             val validated = SafetyPolicy.validateClick(action, liveSnapshot)
             val clickable = validated?.let { nodeAtPath(root, it.clickablePath) }
-            val stateNode = validated?.let { nodeAtPath(root, it.statePath) }
-            if (validated == null || clickable == null || stateNode == null ||
-                !matchesValidatedState(stateNode, validated) ||
+            val stateNode = validated?.statePath?.let { nodeAtPath(root, it) }
+            val validState = validated != null && (
+                validated.statePath == null ||
+                    (stateNode != null && matchesValidatedState(stateNode, validated))
+                )
+            if (validated == null || clickable == null || !validState ||
                 !clickable.isClickable || !clickable.isEnabled || !clickable.isVisibleToUser ||
-                epoch.get() != dispatchEpoch || !executionWithinDeadline(startedAt)
+                !executionWithinDeadline(startedAt)
             ) {
                 callback(false)
                 return@captureLiveSnapshotAsync
             }
             clearTrustedSettingsContext()
-            val dispatched = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (dispatched) invalidateObservedSnapshot()
-            callback(dispatched)
+            performNodeClickWithGestureFallback(clickable) { dispatched ->
+                if (dispatched) invalidateObservedSnapshot()
+                callback(dispatched)
+            }
         }
+    }
+
+    private fun performNodeClickWithGestureFallback(
+        node: AccessibilityNodeInfo,
+        callback: (Boolean) -> Unit,
+    ) {
+        showTouchIndicator(node)
+        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            callback(true)
+            return
+        }
+        val bounds = Rect().also(node::getBoundsInScreen)
+        val displayWidth = resources.displayMetrics.widthPixels
+        val displayHeight = resources.displayMetrics.heightPixels
+        if (bounds.isEmpty || bounds.left < 0 || bounds.top < 0 ||
+            bounds.right > displayWidth || bounds.bottom > displayHeight
+        ) {
+            callback(false)
+            return
+        }
+        dispatchTapGesture(bounds.exactCenterX(), bounds.exactCenterY(), callback)
+    }
+
+    private fun dispatchTapGesture(
+        x: Float,
+        y: Float,
+        callback: (Boolean) -> Unit,
+    ) {
+        val displayWidth = resources.displayMetrics.widthPixels
+        val displayHeight = resources.displayMetrics.heightPixels
+        if (x !in 0f..displayWidth.toFloat() || y !in 0f..displayHeight.toFloat()) {
+            callback(false)
+            return
+        }
+        showTouchIndicator(x, y)
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(
+                GestureDescription.StrokeDescription(
+                    path,
+                    0,
+                    ViewConfiguration.getTapTimeout().toLong(),
+                ),
+            )
+            .build()
+        val accepted = dispatchGesture(
+            gesture,
+            object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    callback(true)
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    callback(false)
+                }
+            },
+            mainHandler,
+        )
+        if (!accepted) callback(false)
     }
 
     private fun matchesValidatedState(
@@ -1593,7 +2728,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         validated: ValidatedClick,
     ): Boolean {
         val stateViewId = stateNode.viewIdResourceName?.lowercase().orEmpty()
-        if (stateViewId != validated.stateViewId.lowercase() ||
+        if (stateViewId != validated.stateViewId?.lowercase() ||
             stateViewId !in TRUSTED_SETTINGS_STATE_RESOURCE_IDS
         ) return false
         val currentState = if (stateNode.isCheckable) {
@@ -1632,7 +2767,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         startedAt: Long,
         callback: (Boolean) -> Unit,
     ) {
-        captureLiveSnapshotAsync(generation) { liveSnapshot, root, dispatchEpoch ->
+        captureLiveSnapshotAsync(generation) { liveSnapshot, root, _ ->
             if (liveSnapshot == null || root == null ||
                 !sameVerifiedScreen(expectedSnapshot, liveSnapshot)
             ) {
@@ -1643,7 +2778,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             val scrollable = scrollablePath?.let { nodeAtPath(root, it) }
             if (scrollable == null || !scrollable.isScrollable ||
                 !scrollable.isEnabled || !scrollable.isVisibleToUser ||
-                epoch.get() != dispatchEpoch || !executionWithinDeadline(startedAt)
+                !executionWithinDeadline(startedAt)
             ) {
                 callback(false)
                 return@captureLiveSnapshotAsync
@@ -1661,8 +2796,8 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun sameVerifiedScreen(expected: UiSnapshot, live: UiSnapshot): Boolean =
         live.packageName == expected.packageName &&
-            live.screenFingerprint() == expected.screenFingerprint() &&
-            SafetyPolicy.highRiskScreenReason(live) == null
+            live.trustedSettingsRoute == expected.trustedSettingsRoute &&
+            SafetyPolicy.highRiskScreenReason(live, allowTruncated = true) == null
 
     private fun executionWithinDeadline(startedAt: Long): Boolean =
         SystemClock.elapsedRealtime() - startedAt in 0..MAX_EXECUTION_MILLIS
@@ -1704,6 +2839,19 @@ class SonjuAccessibilityService : AccessibilityService() {
         private const val POST_EXECUTION_REFRESH_MILLIS = 350L
         private const val OVERLAY_CAPTURE_RETRY_MILLIS = 120L
         private const val OVERLAY_CAPTURE_MAX_RETRIES = 4
+        private const val VOICE_PANEL_START_DELAY_MILLIS = 60L
+        private const val VOICE_PANEL_TIMEOUT_MILLIS = 25_000L
+        private const val VOICE_PANEL_RESULT_DELAY_MILLIS = 220L
+        private const val VOICE_COMPLETE_SILENCE_MILLIS = 3_000L
+        private const val VOICE_POSSIBLY_COMPLETE_SILENCE_MILLIS = 2_200L
+        private const val VOICE_MINIMUM_LENGTH_MILLIS = 1_200L
+        private const val VOICE_CONTINUATION_RESTART_MILLIS = 100L
+        private const val VOICE_CONTINUATION_GRACE_MILLIS = 2_500L
+        private const val OVERLAY_MESSAGE_CLOSE_DELAY_MILLIS = 3_000L
+        private const val TOUCH_INDICATOR_DURATION_MILLIS = 1_000L
+        private const val PROACTIVE_SEARCH_SETTLE_MILLIS = 900L
+        private const val MAX_PROACTIVE_SEARCH_STEPS = 10
+        private const val MAX_TRANSIENT_PLANNING_RETRIES = 2
         private const val MAX_VISUAL_FINGERPRINT_DISTANCE = 10
         private const val MAX_EVENT_ANCESTOR_DEPTH = 64
         private const val SETTINGS_PACKAGE = "com.android.settings"
@@ -1713,17 +2861,17 @@ class SonjuAccessibilityService : AccessibilityService() {
             "com.android.settings:id/switch_widget",
         )
         private const val CONSENT_PREFERENCES = "sonju_preferences"
+        private const val QUICK_VOICE_X_KEY = "quick_voice_x_v1"
+        private const val QUICK_VOICE_Y_KEY = "quick_voice_y_v1"
         private const val CONSENT_KEY = "accessibility_disclosure_accepted_v1"
         private const val VISUAL_CONSENT_KEY = "visual_screen_consent_v1"
+        private const val REMEMBERED_PLAN_GOAL = "전에 성공한 작업 재사용"
         const val EXTRA_FROM_OVERLAY = "com.hwanghj09.sonju.extra.FROM_OVERLAY"
         const val EXTRA_AUTO_START_VOICE = "com.hwanghj09.sonju.extra.AUTO_START_VOICE"
         const val EXTRA_VOICE_COMMAND = "com.hwanghj09.sonju.extra.VOICE_COMMAND"
-        const val EXTRA_BAEMIN_REVIEW = "com.hwanghj09.sonju.extra.BAEMIN_REVIEW"
-        const val EXTRA_BAEMIN_STATUS = "com.hwanghj09.sonju.extra.BAEMIN_STATUS"
-        const val EXTRA_BAEMIN_STATUS_SUCCESS = "com.hwanghj09.sonju.extra.BAEMIN_STATUS_SUCCESS"
         private const val BAEMIN_INITIAL_DELAY_MILLIS = 1_500L
         private const val BAEMIN_STEP_SETTLE_MILLIS = 900L
-        private const val BAEMIN_RETURN_DELAY_MILLIS = 700L
+        private const val BAEMIN_OVERLAY_DISMISS_DELAY_MILLIS = 350L
         private const val BAEMIN_SESSION_TIMEOUT_MILLIS = 5 * 60_000L
         private const val BAEMIN_MAX_STEPS = 14
         private const val BAEMIN_MAX_CONSECUTIVE_FAILURES = 3

@@ -195,10 +195,10 @@ data class UiSnapshot(
 /** Exact, deterministic click identity produced by [SafetyPolicy] and rechecked at the sink. */
 data class ValidatedClick(
     val clickablePath: String,
-    val statePath: String,
-    val stateViewId: String,
-    val currentState: Boolean,
-    val desiredState: Boolean,
+    val statePath: String? = null,
+    val stateViewId: String? = null,
+    val currentState: Boolean? = null,
+    val desiredState: Boolean? = null,
 )
 
 data class AgentAction(
@@ -218,6 +218,7 @@ data class AgentPlan(
     val confidence: Double,
     val actions: List<AgentAction>,
     val source: PlanSource,
+    val continueAfterAction: Boolean = false,
 )
 
 enum class SafetyDecision {

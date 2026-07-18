@@ -16,19 +16,22 @@
     <string name="wake_word_start">백그라운드 호출 켜기</string>
     <string name="wake_word_stop">끄기</string>
     <string name="wake_word_disclosure_title">“손주야” 백그라운드 호출</string>
-    <string name="wake_word_disclosure_message">이 기능을 켜면 앱을 닫아도 foreground service가 마이크를 사용해 “손주야”를 기다립니다. Android 상태 표시와 지속 알림이 항상 보이며, 알림이나 이 화면에서 바로 끌 수 있습니다.\n\n지원되는 휴대폰에서는 기기 내 한국어 음성 인식만 사용합니다. 기기 내 인식이 없으면 음성을 서버로 보내는 대신 기능을 시작하지 않습니다. 배터리 사용량은 늘어날 수 있습니다.\n\n“손주야”라고 부르면 화면 아래에 임시 음성 패널이 나타납니다. 이어서 말한 명령이 실시간으로 표시되고 ‘손주에게 부탁하기’를 누르지 않아도 바로 시작합니다. 주문·결제·메시지 전송 등 외부 영향이 생기는 마지막 단계의 사용자 확인은 유지됩니다.</string>
+    <string name="wake_word_disclosure_message">이 기능을 켜면 앱을 닫아도 foreground service가 마이크를 사용해 “손주야”를 기다립니다. Android 상태 표시와 지속 알림이 항상 보이며, 알림이나 이 화면에서 바로 끌 수 있습니다.\n\n앱에 포함된 오프라인 한국어 음성 모델로 호출어를 휴대폰 안에서만 처리하며 호출 대기 음성을 서버로 보내지 않습니다. 처음 켤 때 모델 준비에 시간이 걸리고 저장 공간과 배터리 사용량이 늘어날 수 있습니다.\n\n“손주야”라고 부르면 화면 아래에 임시 음성 패널이 나타납니다. 이어서 말한 명령이 실시간으로 표시되고 ‘손주에게 부탁하기’를 누르지 않아도 바로 시작합니다. 주문·결제·메시지 전송 등 외부 영향이 생기는 마지막 단계의 사용자 확인은 유지됩니다.</string>
     <string name="wake_word_disclosure_accept">동의하고 켜기</string>
     <string name="wake_word_permission_denied">백그라운드 호출을 켜려면 마이크 권한이 필요해요.</string>
-    <string name="wake_word_on_device_unavailable">이 휴대폰에는 기기 내 한국어 음성 인식이 없어 “손주야” 기능을 사용할 수 없어요.</string>
+    <string name="wake_word_on_device_unavailable">오프라인 호출 모델을 시작하지 못했고 이 휴대폰의 기기 내 한국어 음성 인식도 사용할 수 없어요.</string>
     <string name="wake_word_channel_name">손주야 호출 듣기</string>
     <string name="wake_word_channel_description">“손주야”라는 호출어를 기기에서 감지하는 동안 표시됩니다.</string>
     <string name="wake_word_notification_title">손주가 “손주야”를 듣고 있어요</string>
     <string name="wake_word_notification_listening">기기 내 음성 인식 사용 중 · 눌러서 손주 열기</string>
     <string name="wake_word_notification_detected">“손주야”를 들었어요 · 명령 화면을 여는 중</string>
+    <string name="wake_word_notification_preparing">오프라인 한국어 호출 모델을 준비하고 있어요</string>
+    <string name="wake_word_notification_fallback">오프라인 모델 준비 실패 · 시스템 인식으로 다시 시도 중</string>
     <string name="wake_word_accessibility_required">화면 도우미를 연결해야 호출 화면을 열 수 있어요.</string>
     <string name="live_voice_title">손주가 듣고 있어요</string>
     <string name="live_voice_ready">무엇을 도와드릴까요?</string>
     <string name="live_voice_listening">말씀해 주세요…</string>
+    <string name="quick_voice_button_description">손주에게 말하기</string>
     <string name="baemin_start_title">배민 주문 보조를 시작할까요?</string>
     <string name="baemin_start_message">배민에서 “%1$s”을(를) 검색하고 화면 위의 첫 번째 일치 결과를 선택합니다. 필수 옵션은 이미 선택된 기본값을 유지하고 장바구니까지 진행합니다.\n\n주문·결제 버튼을 만나면 반드시 멈춰 주소·메뉴·수량·총액을 다시 보여 드립니다. 비밀번호·PIN·OTP·카드번호·생체인증은 대신 처리하지 않습니다.</string>
     <string name="baemin_start">배민에서 찾기</string>
@@ -77,7 +80,7 @@
     <string name="technology_description">버튼 이름·위치·상태를 먼저 읽습니다. 별도 동의한 경우 구조가 불완전한 저위험 화면만 상·하단을 가린 저용량 이미지로 Gemini Vision에 보냅니다.</string>
     <string name="powered_by">Gemini 3.1 Flash-Lite · Neuro-Symbolic Safety</string>
     <string name="privacy_dialog_title">손주가 화면을 이해하는 방법</string>
-    <string name="privacy_dialog_message">손주는 접근성 기능으로 현재 앱 이름, 창 제목, 화면에 보이는 글자와 버튼 이름, 위치와 상태를 읽습니다. 비밀번호·인증 정보로 감지한 항목과 주변 값은 수집 단계에서 가립니다.\n\n간단한 명령은 휴대폰 안의 규칙으로만 처리합니다. 그 밖의 요청은 사용자의 명령과 위 화면 구조를 Google Gemini API에 일회성으로 전송합니다. 사용자가 화면 이미지 보조에 별도 동의하면 구조가 불완전한 저위험 화면에서 현재 화면 이미지 1장을 상·하단을 가리고 저해상도로 줄여 함께 전송할 수 있습니다. 금융·결제·인증·권한·설치·민감 입력 신호가 있으면 화면 이미지를 전송하지 않습니다. Interactions 대화 상태 저장은 store=false로 요청하지만, 이는 Google의 보안·오용 방지 로그 등 서비스 운영상 보존까지 없앤다는 뜻은 아닙니다.\n\n배민 주문 보조는 배민 패키지 안에서만 정해진 규칙으로 검색·첫 일치 결과·기본 옵션·장바구니 버튼을 누릅니다. 이 경로의 화면 구조와 검색어는 Gemini에 보내지 않습니다. 주문·결제 버튼을 만나면 주소·메뉴·수량·총액을 기기에서 보여 주고 사용자가 다시 확정해야 한 번 누릅니다. 비밀번호·PIN·OTP·카드번호·생체인증은 대신 처리하지 않습니다.\n\n손주는 스스로 일을 시작하지 않습니다. 사용자가 직접 요청하면 안전 정책이 저위험으로 허용한 동작은 추가 확인 없이 실행하고, 시각 판단으로 찾은 버튼과 다른 사람에게 영향을 주거나 되돌리기 어려운 행동은 실행 전에 다시 확인합니다. 앱은 명령·화면 구조·화면 이미지·모델 응답을 파일이나 로그에 저장하지 않으며 Android 백업도 사용하지 않습니다. 화면 문맥은 실행하거나 2분이 지나면 메모리에서 실제로 지웁니다.</string>
+    <string name="privacy_dialog_message">손주는 접근성 기능으로 현재 앱 이름, 창 제목, 화면에 보이는 글자와 버튼 이름, 위치와 상태를 읽습니다. 비밀번호·인증 정보로 감지한 항목과 주변 값은 수집 단계에서 가립니다.\n\n간단한 명령은 휴대폰 안의 규칙으로만 처리합니다. 그 밖의 요청은 사용자의 명령과 위 화면 구조를 Google Gemini API에 일회성으로 전송합니다. 사용자가 화면 이미지 보조에 별도 동의하면 구조가 불완전한 저위험 화면에서 현재 화면 이미지 1장을 상·하단을 가리고 저해상도로 줄여 함께 전송할 수 있습니다. 금융·결제·인증·권한·설치·민감 입력 신호가 있으면 화면 이미지를 전송하지 않습니다. Interactions 대화 상태 저장은 store=false로 요청하지만, 이는 Google의 보안·오용 방지 로그 등 서비스 운영상 보존까지 없앤다는 뜻은 아닙니다.\n\n배민 주문 보조는 배민 패키지 안에서만 정해진 규칙으로 검색·첫 일치 결과·기본 옵션·장바구니 버튼을 누릅니다. 이 경로의 화면 구조와 검색어는 Gemini에 보내지 않습니다. 주문·결제 버튼을 만나면 주소·메뉴·수량·총액을 기기에서 보여 주고 사용자가 다시 확정해야 한 번 누릅니다. 비밀번호·PIN·OTP·카드번호·생체인증은 대신 처리하지 않습니다.\n\n손주는 스스로 일을 시작하지 않습니다. 사용자가 직접 요청하면 안전 정책이 저위험으로 허용한 동작은 추가 확인 없이 실행하고, 시각 판단으로 찾은 버튼과 다른 사람에게 영향을 주거나 되돌리기 어려운 행동은 실행 전에 다시 확인합니다. 성공한 저위험 단일 화면 동작은 같은 명령·앱·의미 화면에서 빠르게 재사용하도록 클릭 대상 이름과 목표 상태만 휴대폰에 최대 40개·30일 저장할 수 있습니다. 원본 명령·스크린샷·전체 화면 구조는 저장하지 않고, 재사용할 때도 현재 화면을 다시 안전 검사합니다. Android 백업은 사용하지 않으며 일회성 화면 문맥은 실행하거나 2분이 지나면 메모리에서 지웁니다.</string>
     <string name="privacy_accept">동의하고 연결하기</string>
     <string name="privacy_not_now">나중에</string>
     <string name="privacy_close">확인했어요</string>
@@ -86,7 +89,8 @@
     <string name="voice_privacy_accept">동의하고 말하기</string>
     <string name="confirm_title">이대로 도와드릴까요?</string>
     <string name="confirm_execute">네, 실행해 주세요</string>
-    <string name="confirm_cancel">아니요</string>
+    <string name="confirm_cancel">다시 시도</string>
+    <string name="voice_retry">다시 시도</string>
     <string name="blocked_title">이 요청은 대신할 수 없어요</string>
     <string name="blocked_close">알겠어요</string>
     <string name="voice_unavailable">이 휴대폰에서는 음성 입력을 시작할 수 없어요. 글자로 부탁해 주세요.</string>

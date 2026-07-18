@@ -21,10 +21,18 @@ import androidx.core.content.ContextCompat
 import com.hwanghj09.sonju.MainActivity
 import com.hwanghj09.sonju.R
 import com.hwanghj09.sonju.accessibility.SonjuAccessibilityService
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.SpeechService
+import org.vosk.android.StorageService
 
 class WakeWordService : Service(), RecognitionListener {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
+    private var offlineModel: Model? = null
+    private var offlineSpeechService: SpeechService? = null
+    private var offlineModelLoading = false
     private var pausedForCommand = false
     private var destroyed = false
 
@@ -37,7 +45,7 @@ class WakeWordService : Service(), RecognitionListener {
             return
         }
         promoteToForeground(getString(R.string.wake_word_notification_listening))
-        scheduleListening(START_DELAY_MILLIS)
+        initializeOfflineModel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -54,6 +62,8 @@ class WakeWordService : Service(), RecognitionListener {
         running = false
         mainHandler.removeCallbacksAndMessages(null)
         releaseRecognizer()
+        offlineModel?.close()
+        offlineModel = null
         super.onDestroy()
     }
 
@@ -114,15 +124,27 @@ class WakeWordService : Service(), RecognitionListener {
 
     private fun scheduleListening(delayMillis: Long) {
         mainHandler.removeCallbacks(startListeningRunnable)
+        mainHandler.removeCallbacks(recognitionWatchdogRunnable)
         if (!destroyed && !pausedForCommand) {
             mainHandler.postDelayed(startListeningRunnable, delayMillis)
         }
     }
 
     private val startListeningRunnable = Runnable { startListening() }
+    private val recognitionWatchdogRunnable = Runnable {
+        if (!destroyed && !pausedForCommand) {
+            releaseRecognizer()
+            scheduleListening(ERROR_RETRY_MILLIS)
+        }
+    }
 
     private fun startListening() {
         if (destroyed || pausedForCommand || !hasMicrophonePermission()) return
+        if (offlineModel != null) {
+            startOfflineListening()
+            return
+        }
+        if (offlineModelLoading) return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
             !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
         ) {
@@ -149,8 +171,14 @@ class WakeWordService : Service(), RecognitionListener {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 450L)
         }
-        runCatching { recognizer?.startListening(recognizerIntent) }
+        runCatching {
+            recognizer?.startListening(recognizerIntent)
+            mainHandler.removeCallbacks(recognitionWatchdogRunnable)
+            mainHandler.postDelayed(recognitionWatchdogRunnable, RECOGNITION_WATCHDOG_MILLIS)
+        }
             .onFailure {
                 releaseRecognizer()
                 scheduleListening(ERROR_RETRY_MILLIS)
@@ -194,7 +222,11 @@ class WakeWordService : Service(), RecognitionListener {
         if (destroyed) return
         pausedForCommand = false
         notifyStatus(getString(R.string.wake_word_notification_listening))
-        scheduleListening(RESUME_DELAY_MILLIS)
+        if (offlineModel != null) {
+            mainHandler.postDelayed({ startOfflineListening() }, RESUME_DELAY_MILLIS)
+        } else if (!offlineModelLoading) {
+            initializeOfflineModel()
+        }
     }
 
     private fun pauseListening() {
@@ -206,11 +238,18 @@ class WakeWordService : Service(), RecognitionListener {
     }
 
     private fun releaseRecognizer() {
-        recognizer?.runCatching {
+        mainHandler.removeCallbacks(recognitionWatchdogRunnable)
+        offlineSpeechService?.runCatching {
+            stop()
+            shutdown()
+        }
+        offlineSpeechService = null
+        val currentRecognizer = recognizer
+        recognizer = null
+        currentRecognizer?.runCatching {
             cancel()
             destroy()
         }
-        recognizer = null
     }
 
     private fun notifyStatus(status: String) {
@@ -223,17 +262,101 @@ class WakeWordService : Service(), RecognitionListener {
         Manifest.permission.RECORD_AUDIO,
     ) == PackageManager.PERMISSION_GRANTED
 
+    private fun initializeOfflineModel() {
+        if (destroyed || pausedForCommand || offlineModel != null || offlineModelLoading) return
+        offlineModelLoading = true
+        notifyStatus(getString(R.string.wake_word_notification_preparing))
+        StorageService.unpack(
+            this,
+            OFFLINE_MODEL_ASSET,
+            OFFLINE_MODEL_DIRECTORY,
+            { model ->
+                offlineModelLoading = false
+                if (destroyed) {
+                    model.close()
+                } else {
+                    offlineModel = model
+                    notifyStatus(getString(R.string.wake_word_notification_listening))
+                    startOfflineListening()
+                }
+            },
+            {
+                offlineModelLoading = false
+                notifyStatus(getString(R.string.wake_word_notification_fallback))
+                scheduleListening(ERROR_RETRY_MILLIS)
+            },
+        )
+    }
+
+    private fun startOfflineListening() {
+        if (destroyed || pausedForCommand || offlineSpeechService != null) return
+        val model = offlineModel ?: return
+        runCatching {
+            // A wake-word listener is a closed-vocabulary problem. Restricting the decoder keeps
+            // short Korean vocatives from being swallowed by the full dictation language model.
+            val offlineRecognizer = Recognizer(model, OFFLINE_SAMPLE_RATE, OFFLINE_WAKE_GRAMMAR)
+            offlineSpeechService = SpeechService(offlineRecognizer, OFFLINE_SAMPLE_RATE).also {
+                it.startListening(offlineRecognitionListener)
+            }
+        }.onFailure {
+            offlineSpeechService?.runCatching { shutdown() }
+            offlineSpeechService = null
+            mainHandler.postDelayed({ startOfflineListening() }, ERROR_RETRY_MILLIS)
+        }
+    }
+
+    private val offlineRecognitionListener = object : org.vosk.android.RecognitionListener {
+        override fun onPartialResult(hypothesis: String?) {
+            handleOfflineHypothesis(hypothesis, "partial")
+        }
+
+        override fun onResult(hypothesis: String?) {
+            handleOfflineHypothesis(hypothesis, "text")
+        }
+
+        override fun onFinalResult(hypothesis: String?) {
+            if (!pausedForCommand) handleOfflineHypothesis(hypothesis, "text")
+        }
+
+        override fun onError(exception: Exception?) {
+            if (destroyed || pausedForCommand) return
+            offlineSpeechService?.runCatching { shutdown() }
+            offlineSpeechService = null
+            mainHandler.postDelayed({ startOfflineListening() }, ERROR_RETRY_MILLIS)
+        }
+
+        override fun onTimeout() {
+            if (destroyed || pausedForCommand) return
+            offlineSpeechService?.runCatching { shutdown() }
+            offlineSpeechService = null
+            mainHandler.postDelayed({ startOfflineListening() }, NORMAL_RETRY_MILLIS)
+        }
+    }
+
+    private fun handleOfflineHypothesis(hypothesis: String?, field: String) {
+        if (destroyed || pausedForCommand || hypothesis.isNullOrBlank()) return
+        val text = runCatching { JSONObject(hypothesis).optString(field) }.getOrNull().orEmpty()
+        if (WakeWordMatcher.matches(text)) onWakeWordDetected(command = null)
+    }
+
     override fun onReadyForSpeech(params: Bundle?) = Unit
-    override fun onBeginningOfSpeech() = Unit
+    override fun onBeginningOfSpeech() {
+        mainHandler.removeCallbacks(recognitionWatchdogRunnable)
+        mainHandler.postDelayed(recognitionWatchdogRunnable, SPEECH_WATCHDOG_MILLIS)
+    }
     override fun onRmsChanged(rmsdB: Float) = Unit
     override fun onBufferReceived(buffer: ByteArray?) = Unit
-    override fun onEndOfSpeech() = Unit
+    override fun onEndOfSpeech() {
+        mainHandler.removeCallbacks(recognitionWatchdogRunnable)
+        mainHandler.postDelayed(recognitionWatchdogRunnable, RESULT_WATCHDOG_MILLIS)
+    }
 
     override fun onError(error: Int) {
         if (destroyed || pausedForCommand) return
         val delay = if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
             error == SpeechRecognizer.ERROR_TOO_MANY_REQUESTS
         ) BUSY_RETRY_MILLIS else ERROR_RETRY_MILLIS
+        releaseRecognizer()
         if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
             stopSelf()
         } else {
@@ -243,7 +366,10 @@ class WakeWordService : Service(), RecognitionListener {
 
     override fun onResults(results: Bundle?) {
         val detected = handleRecognition(results)
-        if (!detected && !pausedForCommand) scheduleListening(NORMAL_RETRY_MILLIS)
+        if (!detected && !pausedForCommand) {
+            releaseRecognizer()
+            scheduleListening(NORMAL_RETRY_MILLIS)
+        }
     }
 
     override fun onPartialResults(partialResults: Bundle?) {
@@ -270,6 +396,14 @@ class WakeWordService : Service(), RecognitionListener {
         private const val BUSY_RETRY_MILLIS = 5_000L
         private const val RESUME_DELAY_MILLIS = 800L
         private const val COMMAND_FAILSAFE_MILLIS = 60_000L
+        private const val RECOGNITION_WATCHDOG_MILLIS = 12_000L
+        private const val SPEECH_WATCHDOG_MILLIS = 8_000L
+        private const val RESULT_WATCHDOG_MILLIS = 3_000L
+        private const val OFFLINE_MODEL_ASSET = "model-ko"
+        private const val OFFLINE_MODEL_DIRECTORY = "model-ko-unpacked"
+        private const val OFFLINE_SAMPLE_RATE = 16_000.0f
+        private const val OFFLINE_WAKE_GRAMMAR =
+            "[\"손주야\",\"손 주 야\",\"손주아\",\"선주야\",\"선 주 야\",\"손쥬야\",\"[unk]\"]"
         @Volatile
         var running: Boolean = false
             private set

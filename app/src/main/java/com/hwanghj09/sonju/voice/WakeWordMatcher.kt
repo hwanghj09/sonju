@@ -3,8 +3,10 @@ package com.hwanghj09.sonju.voice
 import java.text.Normalizer
 
 internal object WakeWordMatcher {
-    private val variants = setOf("손주야", "손주아")
-    private val spokenPattern = Regex("손[\\s\\p{P}]*주[\\s\\p{P}]*[야아]")
+    private val variants = setOf(
+        "손주야", "손주아", "선주야", "선주아", "손쥬야", "손쥬아",
+    )
+    private val spokenPattern = Regex("[손선][\\s\\p{P}]*[주쥬][\\s\\p{P}]*[야아]")
 
     fun matches(value: String): Boolean {
         val compact = Normalizer.normalize(value, Normalizer.Form.NFKC)

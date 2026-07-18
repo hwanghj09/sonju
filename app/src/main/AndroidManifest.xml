@@ -39,14 +39,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".voice.VoiceCommandActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:finishOnTaskLaunch="true"
-            android:noHistory="true"
-            android:theme="@style/Theme.Sonju.VoicePanel" />
-
         <service
             android:name=".accessibility.SonjuAccessibilityService"
             android:description="@string/accessibility_service_description"

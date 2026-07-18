@@ -256,6 +256,20 @@ class SafetyPolicyTest {
     }
 
     @Test
+    fun unrelatedReadOnlySensitivePreviewDoesNotBlockSafeConversationClick() {
+        val assessment = SafetyPolicy.evaluate(
+            command = "가족 대화방을 눌러 줘",
+            plan = planOf(AgentAction(ActionType.CLICK, "가족 대화방 열기", "가족")),
+            snapshot = snapshot(
+                element(path = "0.1", text = "가족", clickable = true),
+                element(path = "0.2", text = null, sensitive = true),
+            ),
+        )
+
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
+    }
+
+    @Test
     fun duplicatedTarget_failsClosed() {
         val assessment = SafetyPolicy.evaluate(
             command = "확인 버튼 눌러 줘",
@@ -346,14 +360,14 @@ class SafetyPolicyTest {
     }
 
     @Test
-    fun unknownPackageCannotReceiveGenericClicks() {
+    fun ordinaryAppCanReceiveOneExactGenericClickImmediately() {
         val assessment = SafetyPolicy.evaluate(
             command = "확인을 눌러 줘",
             plan = planOf(AgentAction(ActionType.CLICK, "확인 누르기", "확인")),
             snapshot = snapshot(element(text = "확인", clickable = true)),
         )
 
-        assertEquals(SafetyDecision.BLOCK, assessment.decision)
+        assertEquals(SafetyDecision.ALLOW, assessment.decision)
     }
 
     @Test

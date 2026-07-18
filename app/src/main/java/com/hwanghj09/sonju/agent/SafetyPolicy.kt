@@ -30,19 +30,6 @@ object SafetyPolicy {
         "allow", "install", "uninstall", "delete account", "permanently delete", "share",
         "delete", "erase", "reset", "clear data", "clear storage", "remove account", "forget network",
     )
-    private val blockedScreenTerms = setOf(
-        "송금", "이체", "입금", "출금", "잔액", "계좌", "카드", "결제", "구매", "주문",
-        "비밀번호", "비번", "pin", "otp", "인증", "보안코드", "cvc", "cvv",
-        "권한", "설치", "영구삭제", "휴지통비우기", "초기화", "위치공유", "파일공유",
-        "보낼 금액", "받는 분", "예금주", "수취인", "출금 계좌", "입금 계좌",
-        "transfer", "send money", "recipient", "amount to send", "bank account", "account number",
-        "balance", "pay", "payment", "purchase", "buy", "checkout", "place order", "credit card",
-        "debit card", "password", "passcode", "verification", "security code", "captcha",
-        "allow", "permission", "install", "uninstall", "delete account", "permanently delete",
-        "factory reset", "empty trash", "disable security", "share location", "share file",
-        "delete", "erase", "reset", "clear data", "clear storage", "remove account",
-        "device admin", "developer options", "usb debugging", "install unknown apps",
-    )
     private val blockedPackageFragments = setOf(
         "bank", "banking", "finance", "securities", "wallet", "payment", "kakaopay",
         "tosspay", "authenticator", "packageinstaller", "permissioncontroller", "crypto",
@@ -259,8 +246,16 @@ object SafetyPolicy {
         }
 
         if (nonFinishActions.any { it.type.requiresStableScreen() }) {
-            if (snapshot.packageName == "unknown" ||
-                snapshot.elements.none { it.visible && !it.sensitive }
+            val rawVisualClick = nonFinishActions.singleOrNull()?.type == ActionType.VISUAL_CLICK &&
+                plan.source == PlanSource.GEMINI_RAW_SCREEN &&
+                snapshot.visualFingerprint != null &&
+                VisualTargetResolver.resolveScreenPoint(
+                    snapshot,
+                    nonFinishActions.singleOrNull()?.x,
+                    nonFinishActions.singleOrNull()?.y,
+                ) != null
+            if (snapshot.packageName == "unknown" || (!rawVisualClick &&
+                    snapshot.elements.none { it.visible && !it.sensitive })
             ) {
                 return SafetyAssessment(
                     SafetyDecision.BLOCK,
@@ -270,7 +265,7 @@ object SafetyPolicy {
             }
             highRiskScreenReason(
                 snapshot,
-                allowTruncated = plan.source == PlanSource.GEMINI_RAW_SCREEN,
+                allowTruncated = true,
             )?.let { reason ->
                 return SafetyAssessment(
                     SafetyDecision.BLOCK,
@@ -288,20 +283,10 @@ object SafetyPolicy {
             )
         }
 
-        if (nonFinishActions.any { it.type == ActionType.CLICK } &&
-            !isTrustedInteractiveSurface(snapshot)
-        ) {
-            return SafetyAssessment(
-                SafetyDecision.BLOCK,
-                RiskLevel.BLOCKED,
-                "안전성이 검토된 저위험 설정 화면이 아니어서 버튼 누르기와 글자 입력을 실행하지 않습니다.",
-            )
-        }
-
         if (nonFinishActions.any { it.type == ActionType.VISUAL_CLICK }) {
             if (plan.source != PlanSource.GEMINI_RAW_SCREEN ||
                 snapshot.visualFingerprint == null ||
-                VisualTargetResolver.resolveClickablePath(
+                VisualTargetResolver.resolveScreenPoint(
                     snapshot,
                     nonFinishActions.single().x,
                     nonFinishActions.single().y,
@@ -377,6 +362,13 @@ object SafetyPolicy {
             }
 
             if (action.type in setOf(ActionType.SCROLL_DOWN, ActionType.SCROLL_UP)) {
+                if (snapshot.treeTruncated) {
+                    return SafetyAssessment(
+                        SafetyDecision.BLOCK,
+                        RiskLevel.BLOCKED,
+                        "스크롤 영역 전체를 확인하지 못해 화면을 움직이지 않습니다.",
+                    )
+                }
                 val scrollableElements = snapshot.elements.filter { element ->
                     element.scrollable && element.visible && element.enabled
                 }
@@ -401,20 +393,18 @@ object SafetyPolicy {
                     return SafetyAssessment(
                         SafetyDecision.BLOCK,
                         RiskLevel.BLOCKED,
-                        "공식 설정 경로·화면·대상·현재 상태를 하나로 검증하지 못해 누르지 않습니다.",
+                        "화면에서 요청한 버튼을 하나로 정확히 검증하지 못해 누르지 않습니다.",
                     )
                 }
             }
         }
 
-        val needsConfirmation = plan.modelRisk == RiskLevel.MEDIUM || plan.actions.any { action ->
+        val needsConfirmation = plan.actions.any { action ->
             action.type in setOf(
                 ActionType.SET_TEXT,
                 ActionType.OPEN_MESSAGES,
                 ActionType.OPEN_DIALER,
-                ActionType.VISUAL_CLICK,
-            ) ||
-                confirmationTargetTerms.any { term ->
+            ) || confirmationTargetTerms.any { term ->
                     containsPolicyTerm(
                         listOfNotNull(action.target, action.description).joinToString(" "),
                         term,
@@ -484,31 +474,12 @@ object SafetyPolicy {
         if (snapshot.treeTruncated && !allowTruncated) {
             return "화면 전체를 안전하게 검사할 수 없어 버튼·입력·스크롤을 실행하거나 모델에 보내지 않습니다."
         }
-        if (snapshot.elements.any { it.sensitive }) {
-            return "민감 정보 입력란이 있는 화면에서는 버튼·입력·스크롤을 대신 조작하지 않습니다."
-        }
-
         val normalizedPackage = Normalizer.normalize(snapshot.packageName, Normalizer.Form.NFKC)
             .lowercase()
         blockedPackageFragments.firstOrNull { normalizedPackage.contains(it) }?.let {
             return "금융·인증·권한 관련 앱에서는 화면 동작을 대신 실행하지 않습니다."
         }
 
-        val screenValues = buildList {
-            add(snapshot.windowTitle.orEmpty())
-            snapshot.elements.asSequence()
-                .filter { it.visible && !it.sensitive }
-                .forEach { element ->
-                    add(element.text.orEmpty())
-                    add(element.contentDescription.orEmpty())
-                }
-        }
-
-        blockedScreenTerms.firstOrNull { term ->
-            screenValues.any { value -> containsPolicyTerm(value, term) }
-        }?.let { term ->
-            return "‘$term’ 관련 화면에서는 일반적인 확인 버튼도 대신 누르지 않습니다."
-        }
         return null
     }
 
@@ -639,13 +610,32 @@ object SafetyPolicy {
      * accessibility sink independently rebuilds this value from one live root before clicking.
      */
     fun validateClick(action: AgentAction, snapshot: UiSnapshot): ValidatedClick? {
-        if (action.type != ActionType.CLICK || !isTrustedInteractiveSurface(snapshot)) return null
+        if (action.type != ActionType.CLICK) return null
         val target = action.target.orEmpty()
         if (target.isBlank()) return null
+        if (highRiskScreenReason(snapshot, allowTruncated = true) != null) return null
+        val trustedSettingsSurface = isTrustedInteractiveSurface(snapshot)
+        if (snapshot.packageName.equals("com.android.settings", ignoreCase = true) &&
+            !trustedSettingsSurface
+        ) return null
         val matching = snapshot.elements.filter { element ->
-            element.visible && element.enabled && matches(element, target)
+            element.visible && element.enabled && !element.sensitive && matches(element, target)
         }
-        val desiredState = desiredCheckState(action.value) ?: return null
+        val desiredState = desiredCheckState(action.value)
+        if (!trustedSettingsSurface) {
+            if (!action.value.isNullOrBlank()) return null
+            val clickableCandidates = matching.mapNotNull { element ->
+                effectiveClickableElement(snapshot, element)
+            }.distinctBy(UiElement::path)
+            val clickableTargets = clickableCandidates.filter { candidate ->
+                clickableCandidates.none { other ->
+                    other.path != candidate.path && other.path.startsWith("${candidate.path}.")
+                }
+            }
+            val clickable = clickableTargets.singleOrNull() ?: return null
+            return ValidatedClick(clickablePath = clickable.path)
+        }
+        if (desiredState == null) return null
         val directStateTargets = matching.filter { element ->
             val normalizedViewId = Normalizer.normalize(
                 element.viewId.orEmpty(),
