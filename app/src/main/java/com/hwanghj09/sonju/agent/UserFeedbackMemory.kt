@@ -18,12 +18,12 @@ class UserFeedbackMemory(context: Context) {
     ) {
         val entry = JSONObject()
             .put("saved_at", System.currentTimeMillis())
-            .put("command", command.trim().take(300))
+            .put("command", FeedbackMemorySanitizer.sanitize(command).take(300))
             .put("normalized_command", normalize(command))
             .put("package", packageName.take(160))
             .put("completed", completed)
             .put("positive", positive)
-            .put("approach", approach.trim().take(300))
+            .put("approach", FeedbackMemorySanitizer.sanitize(approach).take(300))
         val updated = JSONArray().put(entry)
         readEntries().take(MAX_ENTRIES - 1).forEach(updated::put)
         preferences.edit().putString(ENTRIES_KEY, updated.toString()).apply()
@@ -64,7 +64,10 @@ class UserFeedbackMemory(context: Context) {
         }
     }.getOrDefault(emptyList())
 
-    private fun normalize(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)
+    private fun normalize(value: String): String = Normalizer.normalize(
+        FeedbackMemorySanitizer.sanitize(value),
+        Normalizer.Form.NFKC,
+    )
         .lowercase()
         .replace(Regex("[^\\p{L}\\p{Nd}]"), "")
         .take(300)
@@ -75,4 +78,16 @@ class UserFeedbackMemory(context: Context) {
         private const val MAX_ENTRIES = 50
         private const val MAX_GUIDANCE_ENTRIES = 3
     }
+}
+
+internal object FeedbackMemorySanitizer {
+    private val emailPattern = Regex("[\\p{L}\\p{Nd}._%+-]+@[\\p{L}\\p{Nd}.-]+")
+    private val phonePattern = Regex("(?<!\\d)(?:\\+?\\d[\\d .-]{7,}\\d)(?!\\d)")
+    private val longNumberPattern = Regex("(?<!\\d)\\d{4,}(?!\\d)")
+
+    fun sanitize(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        .replace(emailPattern, "<email>")
+        .replace(phonePattern, "<phone>")
+        .replace(longNumberPattern, "<number>")
+        .trim()
 }

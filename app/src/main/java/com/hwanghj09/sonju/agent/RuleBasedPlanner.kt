@@ -125,6 +125,14 @@ object RuleBasedPlanner {
             ) -> AgentAction(ActionType.SCROLL_UP, "현재 화면을 위쪽 내용으로 이동합니다.")
 
             body.matchesAny(
+                "^(?:화면(?:을)? )?왼쪽(?:으로)? (?:넘기기|넘겨|스크롤하기|스크롤해)$",
+            ) -> AgentAction(ActionType.SCROLL_LEFT, "현재 화면을 왼쪽 내용으로 이동합니다.")
+
+            body.matchesAny(
+                "^(?:화면(?:을)? )?오른쪽(?:으로)? (?:넘기기|넘겨|스크롤하기|스크롤해)$",
+            ) -> AgentAction(ActionType.SCROLL_RIGHT, "현재 화면을 오른쪽 내용으로 이동합니다.")
+
+            body.matchesAny(
                 "^(?:뒤|뒤로|이전 화면|전 화면)(?:으로)? (?:가기|가|돌아가기|돌아가)$",
             ) -> AgentAction(ActionType.BACK, "이전 화면으로 이동합니다.")
 
@@ -160,6 +168,12 @@ object RuleBasedPlanner {
         confidence = 1.0,
         actions = listOf(action, AgentAction(ActionType.FINISH, "요청을 마칩니다.")),
         source = PlanSource.LOCAL_RULE,
+        targetApp = action.target.takeIf { action.type == ActionType.OPEN_APP }.orEmpty(),
+        targetSurface = action.description,
+        requiredTools = setOf(action.type),
+        strategy = listOf(action.description),
+        successCriteria = listOf("${action.description} 결과가 현재 화면에 나타남"),
+        revisionReason = "사용자 명령에서 직접 결정 가능한 단일 도구 경로",
     )
 
     private fun planTrustedToggle(command: String, snapshot: UiSnapshot?): AgentAction? {

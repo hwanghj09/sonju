@@ -5,6 +5,7 @@ import android.os.Build
 import android.view.accessibility.AccessibilityNodeInfo
 import com.hwanghj09.sonju.agent.ScreenBounds
 import com.hwanghj09.sonju.agent.UiElement
+import com.hwanghj09.sonju.agent.UiNodeAction
 import com.hwanghj09.sonju.agent.UiSnapshot
 import java.text.Normalizer
 import kotlin.math.abs
@@ -132,11 +133,17 @@ object UiTreeReader {
         } else {
             null
         }
+        val rawHintText = node.hintText?.toString()?.trim()?.take(120)
+        val rawPaneTitle = node.paneTitle?.toString()?.trim()?.take(120)
+        val rawTooltipText = node.tooltipText?.toString()?.trim()?.take(120)
         val rawViewId = node.viewIdResourceName
         val sensitive = node.isPassword ||
             isSensitiveText(rawText) ||
             isSensitiveText(rawDescription) ||
             isSensitiveText(rawStateDescription) ||
+            isSensitiveText(rawHintText) ||
+            isSensitiveText(rawPaneTitle) ||
+            isSensitiveText(rawTooltipText) ||
             isSensitiveText(rawViewId)
         val bounds = Rect().also(node::getBoundsInScreen)
 
@@ -157,6 +164,18 @@ object UiTreeReader {
             checked = node.isChecked,
             selected = node.isSelected,
             stateDescription = rawStateDescription.takeUnless { sensitive },
+            hintText = rawHintText.takeUnless { sensitive },
+            paneTitle = rawPaneTitle.takeUnless { sensitive },
+            tooltipText = rawTooltipText.takeUnless { sensitive },
+            focusable = node.isFocusable,
+            focused = node.isFocused,
+            accessibilityFocused = node.isAccessibilityFocused,
+            longClickable = node.isLongClickable,
+            dismissable = node.isDismissable,
+            heading = node.isHeading,
+            availableActions = node.actionList.mapNotNullTo(linkedSetOf()) { action ->
+                action.toPlannerAction()
+            },
         )
 
         for (index in 0 until node.childCount) {
@@ -351,8 +370,30 @@ object UiTreeReader {
         text = null,
         contentDescription = null,
         stateDescription = null,
+        hintText = null,
+        paneTitle = null,
+        tooltipText = null,
         sensitive = true,
     )
+
+    private fun AccessibilityNodeInfo.AccessibilityAction.toPlannerAction(): UiNodeAction? =
+        when (id) {
+            AccessibilityNodeInfo.ACTION_CLICK -> UiNodeAction.CLICK
+            AccessibilityNodeInfo.ACTION_LONG_CLICK -> UiNodeAction.LONG_CLICK
+            AccessibilityNodeInfo.ACTION_SET_TEXT -> UiNodeAction.SET_TEXT
+            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> UiNodeAction.SCROLL_FORWARD
+            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> UiNodeAction.SCROLL_BACKWARD
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id -> UiNodeAction.SCROLL_UP
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id -> UiNodeAction.SCROLL_DOWN
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id -> UiNodeAction.SCROLL_LEFT
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id -> UiNodeAction.SCROLL_RIGHT
+            AccessibilityNodeInfo.ACTION_FOCUS -> UiNodeAction.FOCUS
+            AccessibilityNodeInfo.ACTION_CLEAR_FOCUS -> UiNodeAction.CLEAR_FOCUS
+            AccessibilityNodeInfo.ACTION_EXPAND -> UiNodeAction.EXPAND
+            AccessibilityNodeInfo.ACTION_COLLAPSE -> UiNodeAction.COLLAPSE
+            AccessibilityNodeInfo.ACTION_DISMISS -> UiNodeAction.DISMISS
+            else -> null
+        }
 
     internal fun isSensitiveText(value: String?): Boolean {
         if (value.isNullOrBlank()) return false

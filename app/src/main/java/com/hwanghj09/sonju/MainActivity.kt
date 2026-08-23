@@ -40,18 +40,18 @@ import com.google.android.material.textfield.TextInputEditText
 import com.hwanghj09.sonju.accessibility.SonjuAccessibilityService
 import com.hwanghj09.sonju.agent.ActionType
 import com.hwanghj09.sonju.agent.AgentPlan
-import com.hwanghj09.sonju.agent.AppTaskMemory
+import com.hwanghj09.sonju.agent.AutonomySession
 import com.hwanghj09.sonju.agent.ContextLifetime
+import com.hwanghj09.sonju.agent.EssentialSafetyPolicy
+import com.hwanghj09.sonju.agent.LearnedRouteMemory
+import com.hwanghj09.sonju.agent.PlanSource
 import com.hwanghj09.sonju.agent.RuleBasedPlanner
 import com.hwanghj09.sonju.agent.RiskLevel
 import com.hwanghj09.sonju.agent.SafetyAssessment
 import com.hwanghj09.sonju.agent.SafetyDecision
-import com.hwanghj09.sonju.agent.SafetyPolicy
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.agent.displayName
 import com.hwanghj09.sonju.ai.GeminiPlanner
-import com.hwanghj09.sonju.shopping.BaeminOrderRequest
-import com.hwanghj09.sonju.shopping.BaeminOrderRequestParser
 import com.hwanghj09.sonju.voice.WakeWordService
 import java.util.Locale
 
@@ -76,7 +76,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var competingControls: List<View> = emptyList()
 
     private val geminiPlanner = GeminiPlanner()
-    private lateinit var appTaskMemory: AppTaskMemory
+    private lateinit var learnedRouteMemory: LearnedRouteMemory
+    private var autonomySession: AutonomySession? = null
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
     private var fromOverlay = false
@@ -182,7 +183,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         bindViews()
         configureActions()
-        appTaskMemory = AppTaskMemory(this)
+        learnedRouteMemory = LearnedRouteMemory(this)
         textToSpeech = TextToSpeech(this, this)
         receiveOverlayContext(intent)
 
@@ -608,17 +609,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             commandInput.requestFocus()
             return
         }
-        BaeminOrderRequestParser.parse(command)?.let { request ->
-            hideKeyboard()
-            voiceReviewText.visibility = View.GONE
-            startBaeminAutomatically(request)
-            return
-        }
-        SafetyPolicy.preflightCommand(command)?.let { assessment ->
-            hideKeyboard()
-            showBlocked(assessment)
-            return
-        }
         commandInput.error = null
         voiceReviewText.visibility = View.GONE
         resultCard.visibility = View.GONE
@@ -632,27 +622,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val preRenderedSemanticMap = externalSemanticMapJpegBase64
         externalSemanticMapJpegBase64 = null
 
-        SafetyPolicy.highRiskScreenReason(snapshot)?.let { reason ->
-            showBlocked(
-                SafetyAssessment(
-                    decision = SafetyDecision.BLOCK,
-                    level = RiskLevel.BLOCKED,
-                    reason = reason,
-                ),
-            )
-            return
-        }
+        val session = autonomySession?.takeIf { it.finalGoal == command }
+            ?: AutonomySession(
+                finalGoal = command,
+                initialSnapshot = snapshot,
+                startedAtMillis = SystemClock.elapsedRealtime(),
+            ).also { autonomySession = it }
+        session.observe(snapshot)
 
         val localPlan = RuleBasedPlanner.plan(command, snapshot)
         if (localPlan != null) {
             showProgress(getString(R.string.progress_check))
             handlePlan(command, snapshot, localPlan)
-            return
-        }
-
-        appTaskMemory.recall(command, snapshot)?.let { rememberedPlan ->
-            showProgress("전에 성공한 화면 동작을 안전하게 다시 확인하고 있어요")
-            handlePlan(command, snapshot, rememberedPlan)
             return
         }
 
@@ -686,7 +667,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         semanticMap: String?,
         generation: Long,
     ) {
-        geminiPlanner.planAsync(command, snapshot, semanticMap) { result ->
+        val session = autonomySession?.takeIf { it.finalGoal == command }
+        val routeHint = learnedRouteMemory.recallHint(
+            goal = command,
+            snapshot = snapshot,
+            targetApp = session?.latestPlan?.targetApp,
+        )
+        geminiPlanner.planAsync(
+            command = command,
+            snapshot = snapshot,
+            semanticMapJpegBase64 = semanticMap,
+            autonomyContext = session?.plannerContext(snapshot, routeHint),
+        ) { result ->
             runOnUiThread {
                 if (generation != requestGeneration || isFinishing || isDestroyed) return@runOnUiThread
                 result.fold(
@@ -703,12 +695,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun handlePlan(command: String, snapshot: UiSnapshot, plan: AgentPlan) {
+    private fun handlePlan(command: String, snapshot: UiSnapshot, candidate: AgentPlan) {
+        val plan = autonomySession?.takeIf { it.finalGoal == command }
+            ?.acceptPlan(candidate, snapshot)
+            ?: candidate
         if (plan.goalCompleted && plan.actions.none { it.type != ActionType.FINISH }) {
-            val message = "요청한 화면의 후보를 찾았어요. " +
-                "${plan.summary.ifBlank { "현재 화면을 직접 확인해 주세요." }} " +
-                "모델 판단만으로 완료 처리하지 않았습니다."
-            finishBusyWithMessage(message, success = false)
+            autonomySession?.takeIf { it.finalGoal == command }?.let { session ->
+                learnedRouteMemory.remember(session, plan)
+            }
+            autonomySession = null
+            val message = "최종 목표를 화면에서 확인했어요. " +
+                plan.summary.ifBlank { "요청한 상태에 도달했습니다." }
+            finishBusyWithMessage(message, success = true)
             speak(message)
             return
         }
@@ -722,7 +720,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             )
             return
         }
-        val assessment = SafetyPolicy.evaluate(command, plan, snapshot)
+        val assessment = EssentialSafetyPolicy.evaluate(command, plan, snapshot)
         when (assessment.decision) {
             SafetyDecision.BLOCK -> showBlocked(assessment)
             SafetyDecision.REQUIRE_CONFIRMATION ->
@@ -752,9 +750,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         }
                     }
                     .orEmpty()
-                "• ${action.type.displayName()}$target\n  ${action.description}$value"
+                val coordinate = if (action.type == ActionType.CLICK_COORDINATE) {
+                    "\n  좌표: x=${action.xRatio ?: "?"}, y=${action.yRatio ?: "?"}"
+                } else ""
+                "• ${action.type.displayName()}$target\n  ${action.description}$value$coordinate"
             }
         val message = buildString {
+            appendLine("최종 목표: ${plan.goal}")
+            appendLine("실행 앱: ${plan.targetApp.ifBlank { "현재 앱" }}")
+            appendLine("목표 화면/기능: ${plan.targetSurface.ifBlank { "현재 화면" }}")
+            appendLine("사용 도구: ${plan.requiredTools.joinToString { it.name }}")
+            appendLine()
             appendLine(plan.summary)
             appendLine()
             appendLine(steps)
@@ -845,12 +851,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 if (executionRequestGeneration != requestGeneration || isFinishing || isDestroyed) {
                     return@runOnUiThread
                 }
+                val session = autonomySession?.takeIf { it.finalGoal == command }
+                session?.recordExecution(plan, snapshot, result)
+                val adaptivePlan = plan.continueAfterAction || plan.source in setOf(
+                    PlanSource.GEMINI_STRUCTURE,
+                    PlanSource.GEMINI_SEMANTIC_MAP,
+                )
+                if (adaptivePlan && session?.canContinue(SystemClock.elapsedRealtime()) != false) {
+                    service.continueAutonomousCommand(command, session)
+                    finishBusyWithMessage(
+                        if (result.success) "화면 변화를 확인하고 다음 도구를 계획하고 있어요."
+                        else "실패 결과를 반영해 다른 경로를 계획하고 있어요.",
+                        success = result.success,
+                    )
+                    return@runOnUiThread
+                }
                 val message = if (result.success) {
-                    appTaskMemory.remember(command, snapshot, plan)
+                    session?.let { learnedRouteMemory.remember(it, plan) }
                     plan.summary.ifBlank { getString(R.string.action_completed) }
                 } else {
                     result.message.ifBlank { getString(R.string.action_failed) }
                 }
+                autonomySession = null
                 finishBusyWithMessage(message, result.success)
                 speak(message)
                 if (shouldReturn) showToast(message)
@@ -882,29 +904,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun openAccessibilitySettings() {
         runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
             .onFailure { showToast(getString(R.string.generic_error)) }
-    }
-
-    private fun showBaeminStartConfirmation(request: BaeminOrderRequest) {
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.baemin_start_title)
-            .setMessage(getString(R.string.baemin_start_message, request.query))
-            .setNegativeButton(R.string.confirm_cancel) { _, _ ->
-                startVoiceInput(autoExecute = true)
-            }
-            .setPositiveButton(R.string.baemin_start) { _, _ ->
-                startBaeminAutomatically(request)
-            }
-            .show()
-    }
-
-    private fun startBaeminAutomatically(request: BaeminOrderRequest) {
-        val service = SonjuAccessibilityService.instance
-        if (service == null || !service.startBaeminOrder(request.query)) {
-            showResult(getString(R.string.baemin_unavailable), success = false)
-        } else {
-            clearOverlayContext()
-            showToast(getString(R.string.baemin_started, request.query))
-        }
     }
 
     private fun openAppDetailsSettings() {

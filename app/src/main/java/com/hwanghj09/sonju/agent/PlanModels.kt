@@ -13,9 +13,12 @@ enum class ActionType {
     OPEN_DIALER,
     OPEN_MESSAGES,
     CLICK,
+    CLICK_COORDINATE,
     SET_TEXT,
     SCROLL_DOWN,
     SCROLL_UP,
+    SCROLL_LEFT,
+    SCROLL_RIGHT,
     BACK,
     HOME,
     NOTIFICATIONS,
@@ -40,6 +43,24 @@ enum class PlanSource {
     LOCAL_RULE,
     GEMINI_STRUCTURE,
     GEMINI_SEMANTIC_MAP,
+}
+
+/** Accessibility actions exposed by a live node and safe to share with the planner. */
+enum class UiNodeAction {
+    CLICK,
+    LONG_CLICK,
+    SET_TEXT,
+    SCROLL_FORWARD,
+    SCROLL_BACKWARD,
+    SCROLL_UP,
+    SCROLL_DOWN,
+    SCROLL_LEFT,
+    SCROLL_RIGHT,
+    FOCUS,
+    CLEAR_FOCUS,
+    EXPAND,
+    COLLAPSE,
+    DISMISS,
 }
 
 enum class RiskLevel {
@@ -76,6 +97,16 @@ data class UiElement(
     val checked: Boolean = false,
     val selected: Boolean = false,
     val stateDescription: String? = null,
+    val hintText: String? = null,
+    val paneTitle: String? = null,
+    val tooltipText: String? = null,
+    val focusable: Boolean = false,
+    val focused: Boolean = false,
+    val accessibilityFocused: Boolean = false,
+    val longClickable: Boolean = false,
+    val dismissable: Boolean = false,
+    val heading: Boolean = false,
+    val availableActions: Set<UiNodeAction> = emptySet(),
 ) {
     fun compactLine(): String {
         val safeText = if (sensitive) "[민감정보 가림]" else text.orEmpty().take(80)
@@ -97,6 +128,21 @@ data class UiElement(
             if (!sensitive && !stateDescription.isNullOrBlank()) {
                 append(" state=").append(stateDescription.take(60).replace('\n', ' '))
             }
+            if (!sensitive && !hintText.isNullOrBlank()) {
+                append(" hint=").append(hintText.take(60).replace('\n', ' '))
+            }
+            if (!sensitive && !paneTitle.isNullOrBlank()) {
+                append(" pane=").append(paneTitle.take(60).replace('\n', ' '))
+            }
+            if (focusable) append(" focusable")
+            if (focused) append(" focused")
+            if (accessibilityFocused) append(" accessibilityFocused")
+            if (longClickable) append(" longClickable")
+            if (dismissable) append(" dismissable")
+            if (heading) append(" heading")
+            if (availableActions.isNotEmpty()) {
+                append(" actions=").append(availableActions.joinToString(",") { it.name })
+            }
             if (!enabled) append(" disabled")
         }
     }
@@ -116,7 +162,11 @@ data class UiSnapshot(
             element.visible && !element.sensitive &&
                 (element.clickable || element.editable || element.scrollable ||
                     element.checkable ||
-                    !element.text.isNullOrBlank() || !element.contentDescription.isNullOrBlank())
+                    element.longClickable || element.dismissable ||
+                    element.availableActions.isNotEmpty() ||
+                    !element.text.isNullOrBlank() ||
+                    !element.contentDescription.isNullOrBlank() ||
+                    !element.hintText.isNullOrBlank() || !element.paneTitle.isNullOrBlank())
         } >= 4
 
     fun compactText(maxElements: Int = 90): String = buildString {
@@ -128,17 +178,20 @@ data class UiSnapshot(
             .filter { element ->
                 element.visible && !element.sensitive &&
                     (element.clickable || element.editable || element.scrollable || element.checkable ||
+                        element.longClickable || element.dismissable ||
+                        element.availableActions.isNotEmpty() ||
                         !element.text.isNullOrBlank() ||
                         !element.contentDescription.isNullOrBlank() ||
-                        !element.stateDescription.isNullOrBlank())
+                        !element.stateDescription.isNullOrBlank() ||
+                        !element.hintText.isNullOrBlank() || !element.paneTitle.isNullOrBlank())
             }
             .sortedByDescending { element ->
                 when {
                     element.checkable -> 6
-                    element.editable -> 5
-                    element.clickable -> 4
-                    element.scrollable -> 3
-                    !element.contentDescription.isNullOrBlank() -> 2
+                    element.editable || UiNodeAction.SET_TEXT in element.availableActions -> 5
+                    element.clickable || UiNodeAction.CLICK in element.availableActions -> 4
+                    element.scrollable || element.availableActions.any { it.name.startsWith("SCROLL") } -> 3
+                    !element.contentDescription.isNullOrBlank() || !element.hintText.isNullOrBlank() -> 2
                     else -> 1
                 }
             }
@@ -171,7 +224,16 @@ data class UiSnapshot(
                     append(element.clickable).append('|').append(element.editable).append('|')
                     append(element.scrollable).append('|').append(element.enabled).append('|')
                     append(element.sensitive).append('|').append(element.checkable).append('|')
-                    append(element.checked).append('|').append(element.selected).append('\n')
+                    append(element.checked).append('|').append(element.selected).append('|')
+                    append(element.hintText.orEmpty()).append('|')
+                    append(element.paneTitle.orEmpty()).append('|')
+                    append(element.tooltipText.orEmpty()).append('|')
+                    append(element.focusable).append('|').append(element.focused).append('|')
+                    append(element.accessibilityFocused).append('|')
+                    append(element.longClickable).append('|').append(element.dismissable).append('|')
+                    append(element.heading).append('|')
+                    append(element.availableActions.sortedBy { it.name }.joinToString(",") { it.name })
+                        .append('\n')
                 }
         }
         return MessageDigest.getInstance("SHA-256")
@@ -216,6 +278,10 @@ data class AgentAction(
     val target: String? = null,
     val value: String? = null,
     val waitMillis: Long = 0,
+    /** Normalized display coordinate used only by [ActionType.CLICK_COORDINATE]. */
+    val xRatio: Double? = null,
+    /** Normalized display coordinate used only by [ActionType.CLICK_COORDINATE]. */
+    val yRatio: Double? = null,
 )
 
 data class AgentPlan(
@@ -227,6 +293,20 @@ data class AgentPlan(
     val source: PlanSource,
     val continueAfterAction: Boolean = false,
     val goalCompleted: Boolean = false,
+    /** App that should be running to satisfy [goal]. May be revised after observations. */
+    val targetApp: String = "",
+    /** Page or feature that should be reached or operated. May be revised after observations. */
+    val targetSurface: String = "",
+    /** Full tool set expected for the route, not just the next executable action. */
+    val requiredTools: Set<ActionType> = emptySet(),
+    /** High-level route. Execution still happens one observed action at a time. */
+    val strategy: List<String> = emptyList(),
+    /** Observable conditions that prove the immutable final goal is complete. */
+    val successCriteria: List<String> = emptyList(),
+    /** Why mutable plan fields changed after the latest observation or failure. */
+    val revisionReason: String = "",
+    /** Assigned locally. Model output cannot roll the revision backwards. */
+    val revision: Int = 0,
 )
 
 enum class SafetyDecision {
@@ -258,9 +338,12 @@ fun ActionType.displayName(): String = when (this) {
     ActionType.OPEN_DIALER -> "전화 화면 열기"
     ActionType.OPEN_MESSAGES -> "문자 화면 열기"
     ActionType.CLICK -> "버튼 누르기"
+    ActionType.CLICK_COORDINATE -> "화면 좌표 누르기"
     ActionType.SET_TEXT -> "글자 입력하기"
     ActionType.SCROLL_DOWN -> "화면 아래로 내리기"
     ActionType.SCROLL_UP -> "화면 위로 올리기"
+    ActionType.SCROLL_LEFT -> "화면 왼쪽으로 넘기기"
+    ActionType.SCROLL_RIGHT -> "화면 오른쪽으로 넘기기"
     ActionType.BACK -> "이전 화면으로 가기"
     ActionType.HOME -> "홈 화면으로 가기"
     ActionType.NOTIFICATIONS -> "알림창 열기"
