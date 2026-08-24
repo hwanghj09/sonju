@@ -68,8 +68,11 @@ if (-not (Test-Path -LiteralPath $apk)) {
     throw "debug APK를 찾지 못했습니다: $apk"
 }
 
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $installOutput = @(& $adb -s $device.Serial install -r $apk 2>&1)
 $installExit = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorActionPreference
 $installOutput | Write-Host
 if ($installExit -ne 0) {
     $signatureMismatch = $installOutput -match "INSTALL_FAILED_UPDATE_INCOMPATIBLE"
