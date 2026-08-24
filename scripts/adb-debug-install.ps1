@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Serial,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$UninstallExisting
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,8 +68,20 @@ if (-not (Test-Path -LiteralPath $apk)) {
     throw "debug APK를 찾지 못했습니다: $apk"
 }
 
-& $adb -s $device.Serial install -r $apk
-if ($LASTEXITCODE -ne 0) { throw "APK 설치에 실패했습니다." }
+$installOutput = @(& $adb -s $device.Serial install -r $apk 2>&1)
+$installExit = $LASTEXITCODE
+$installOutput | Write-Host
+if ($installExit -ne 0) {
+    $signatureMismatch = $installOutput -match "INSTALL_FAILED_UPDATE_INCOMPATIBLE"
+    if (-not $UninstallExisting -or -not $signatureMismatch) {
+        throw "APK 설치에 실패했습니다. 서명이 다른 기존 앱이면 -UninstallExisting 옵션을 명시적으로 사용하세요."
+    }
+    Write-Warning "기존 $($device.Serial)의 com.hwanghj09.sonju를 제거합니다. 앱 데이터와 접근성 활성화 상태가 삭제될 수 있습니다."
+    & $adb -s $device.Serial uninstall com.hwanghj09.sonju
+    if ($LASTEXITCODE -ne 0) { throw "기존 앱 제거에 실패했습니다." }
+    & $adb -s $device.Serial install -r $apk
+    if ($LASTEXITCODE -ne 0) { throw "기존 앱 제거 후 APK 설치에도 실패했습니다." }
+}
 & $adb -s $device.Serial shell am start -n "com.hwanghj09.sonju/.MainActivity"
 if ($LASTEXITCODE -ne 0) { throw "Sonju 실행에 실패했습니다." }
 Write-Host "설치·실행 완료: $($device.Serial)"

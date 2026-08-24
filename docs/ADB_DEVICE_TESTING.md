@@ -25,6 +25,12 @@
 .\scripts\adb-debug-install.ps1 -SkipBuild
 ```
 
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE`가 나오면 폰에 다른 서명의 기존 Sonju가 설치된 상태입니다. 기존 앱 데이터와 접근성 활성화 상태를 삭제해도 되는 경우에만 아래 옵션을 사용합니다.
+
+```powershell
+.\scripts\adb-debug-install.ps1 -UninstallExisting
+```
+
 ## 테스트 전 확인
 
 - 온보딩과 개인정보 고지를 완료합니다.
