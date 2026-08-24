@@ -102,6 +102,14 @@ GEMINI_API_KEY=YOUR_LOCAL_PROTOTYPE_KEY
 
 현재 저장소 상위 경로에 한글이 포함되어 있어 Windows의 Kotlin/Gradle 테스트 워커가 간헐적으로 클래스를 찾지 못할 수 있습니다. 이 경우 소스 문제가 아니라 [Android Gradle Plugin의 비 ASCII Windows 경로 제약](https://issuetracker.google.com/issues/37145273)이므로 `C:\src\sonju`처럼 ASCII 경로의 체크아웃에서 테스트하십시오. APK 빌드를 위한 경로 검사 우회는 `gradle.properties`에 포함되어 있습니다.
 
+## USB ADB 기기 테스트
+
+폰에서 개발자 옵션과 USB 디버깅을 켜고 USB 디버깅 허용 대화상자를 승인한 뒤 아래 스크립트를 실행하면 debug APK를 빌드·설치하고 Sonju를 시작합니다. 연결 절차와 다중 기기 선택은 [ADB 기기 테스트 문서](docs/ADB_DEVICE_TESTING.md)를 참고하십시오.
+
+```powershell
+.\scripts\adb-debug-install.ps1
+```
+
 ## ‘Google Framer’와 실제 구현 차이
 
 Google의 공식 모바일 UI 기술 중 `Google Framer`라는 공개 API는 확인되지 않습니다. 화면을 보고 조작하는 에이전트를 뜻했다면 가장 가까운 공식 기능은 [Gemini Computer Use](https://ai.google.dev/gemini-api/docs/computer-use)이며, 화면 구조를 앱 렌더링 단계에서 가로채는 공개 Android API는 아닙니다.
