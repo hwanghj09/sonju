@@ -104,6 +104,25 @@ class EssentialSafetyPolicyTest {
                 expected.copy(epoch = expected.epoch + 1),
             ),
         )
+        assertTrue(
+            EssentialSafetyPolicy.allowsRemoteScreenshot(
+                expected,
+                expected.copy(
+                    windowBounds = ScreenBounds(0, 0, 1080, 1920),
+                    elements = expected.elements.map { element ->
+                        element.copy(bounds = ScreenBounds(40, 70, 540, 270))
+                    },
+                ),
+            ),
+        )
+        assertFalse(
+            EssentialSafetyPolicy.allowsRemoteScreenshot(
+                expected,
+                expected.copy(
+                    elements = expected.elements.map { element -> element.copy(text = "변경됨") },
+                ),
+            ),
+        )
     }
 
     private fun plan(action: AgentAction) = AgentPlan(

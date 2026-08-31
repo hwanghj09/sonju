@@ -14,6 +14,8 @@ class ScreenExplainerTest {
     fun recognizesNaturalKoreanExplanationRequests() {
         assertTrue(ScreenExplainer.isExplanationRequest("이거 어떻게 사용하는 앱이야?"))
         assertTrue(ScreenExplainer.isExplanationRequest("현재 화면 설명해 줘"))
+        assertTrue(ScreenExplainer.isExplanationRequest("현재 화면을 읽어 줘"))
+        assertTrue(ScreenExplainer.isExplanationRequest("이 메시지 내용을 읽어주세요"))
         assertTrue(ScreenExplainer.isExplanationRequest("이거 카톡 프로필 사진 어떻게 바꿔?"))
         assertTrue(ScreenExplainer.isExplanationRequest("설정 방법을 알려 줘"))
         assertTrue(ScreenExplainer.isExplanationRequest("이 화면에서 검색 어떻게 해?"))
@@ -21,6 +23,8 @@ class ScreenExplainerTest {
         assertFalse(ScreenExplainer.isExplanationRequest("가족 대화방 눌러 줘"))
         assertFalse(ScreenExplainer.isExplanationRequest("검색 버튼 눌러줄래?"))
         assertFalse(ScreenExplainer.isExplanationRequest("이 화면에서 검색해 줘"))
+        assertFalse(ScreenExplainer.isExplanationRequest("서울역 가는 길 알려줘"))
+        assertFalse(ScreenExplainer.isExplanationRequest("강남역까지 경로 알려줘"))
     }
 
     @Test

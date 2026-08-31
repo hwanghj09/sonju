@@ -3,12 +3,25 @@ package com.hwanghj09.sonju
 import com.hwanghj09.sonju.accessibility.UiTreeReader
 import com.hwanghj09.sonju.agent.ScreenBounds
 import com.hwanghj09.sonju.agent.UiElement
+import com.hwanghj09.sonju.agent.UiNodeAction
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UiTreeReaderTest {
+    @Test
+    fun deliveryDurationRangeIsPublicNotAShortCredential() {
+        assertFalse(UiTreeReader.isSensitiveText("44~59분 후 도착"))
+        assertFalse(UiTreeReader.isSensitiveText("45 minutes"))
+    }
+
+    @Test
+    fun setTextCapabilityKeepsTransientComposeInputEditable() {
+        assertTrue(UiTreeReader.hasEditableSemantics(false, setOf(UiNodeAction.SET_TEXT)))
+        assertFalse(UiTreeReader.hasEditableSemantics(false, emptySet()))
+    }
+
     @Test
     fun fourAndFiveDigitCodesAreRedacted() {
         assertTrue(UiTreeReader.isSensitiveText("인증번호 1234"))
@@ -33,6 +46,12 @@ class UiTreeReaderTest {
         assertFalse(UiTreeReader.isSensitiveText("spinner"))
         assertFalse(UiTreeReader.isSensitiveText("2026년"))
         assertFalse(UiTreeReader.isSensitiveText("5000원"))
+        assertFalse(UiTreeReader.isSensitiveText("1,163개"))
+        assertTrue(UiTreeReader.isSensitiveText("(1,163)"))
+        assertTrue(UiTreeReader.isMirroredPublicCount("(1,163)", "1,163개"))
+        assertFalse(UiTreeReader.isMirroredPublicCount("1234", "OTP 1234"))
+        assertTrue(UiTreeReader.isMirroredPublicAmount("15900", "15,900원"))
+        assertFalse(UiTreeReader.isMirroredPublicAmount("1234", "OTP 1234"))
         assertTrue(UiTreeReader.isSensitiveText("12:34"))
         assertFalse(UiTreeReader.isSensitiveText("12:34 알람"))
         assertFalse(UiTreeReader.isSensitiveText("현재 시간 12:34"))
@@ -50,6 +69,9 @@ class UiTreeReaderTest {
         assertFalse(UiTreeReader.isSensitiveText("5000원짜리 상품"))
         assertFalse(UiTreeReader.isSensitiveText("5000원어치 상품"))
         assertFalse(UiTreeReader.isSensitiveText("가격은 5000원입니다."))
+        assertFalse(UiTreeReader.isSensitiveText("15,900원리뷰 4"))
+        assertFalse(UiTreeReader.isSensitiveText("15,900원4,800원0원0원20,700원"))
+        assertTrue(UiTreeReader.isSensitiveText("411111111111원5000원"))
         assertTrue(UiTreeReader.isSensitiveText("2026"))
         assertTrue(UiTreeReader.isSensitiveText("29:99"))
     }
@@ -221,6 +243,79 @@ class UiTreeReaderTest {
         val redacted = UiTreeReader.markSplitCredentialClusters(elements)
 
         assertTrue(redacted.all { it.sensitive })
+    }
+
+    @Test
+    fun hiddenSensitiveNodesDoNotContaminateVisibleControlsAtReusedCoordinates() {
+        val hiddenSecret = element("0.hidden", "1234", left = 600, top = 2_500)
+            .copy(sensitive = true, visible = false)
+        val visibleButton = element(
+            "0.order",
+            "주문서로 이동",
+            left = 600,
+            top = 2_500,
+            clickable = true,
+        )
+
+        val protected = UiTreeReader.propagateSensitiveContext(
+            listOf(hiddenSecret, visibleButton),
+        )
+
+        assertTrue(protected.first { it.path == hiddenSecret.path }.sensitive)
+        assertFalse(protected.first { it.path == visibleButton.path }.sensitive)
+    }
+
+    @Test
+    fun visibleSensitiveSiblingsStillProtectTheirSharedControl() {
+        val visibleSecret = element("0.row.secret", "1234", left = 0)
+            .copy(sensitive = true)
+        val siblingButton = element("0.row.button", "복사", left = 120, clickable = true)
+
+        val protected = UiTreeReader.propagateSensitiveContext(
+            listOf(visibleSecret, siblingButton),
+        )
+
+        assertTrue(protected.all { it.sensitive })
+    }
+
+    @Test
+    fun distantSiblingsInOneLargeLayoutDoNotContaminateEachOther() {
+        val visibleSecret = element("0.content.phone", "01012345678", left = 0, top = 100)
+            .copy(sensitive = true)
+        val distantMenu = element(
+            "0.content.menu",
+            "크림 파스타 14,000원",
+            left = 0,
+            top = 900,
+            clickable = true,
+        )
+
+        val protected = UiTreeReader.propagateSensitiveContext(
+            listOf(visibleSecret, distantMenu),
+        )
+
+        assertTrue(protected.first { it.path == visibleSecret.path }.sensitive)
+        assertFalse(protected.first { it.path == distantMenu.path }.sensitive)
+    }
+
+    @Test
+    fun sameRowElementsInDifferentBranchesNeedActualHorizontalProximity() {
+        val edgeSecret = element("0.toolbar.secret", "1234", left = 950, top = 100)
+            .copy(sensitive = true)
+        val unrelatedCard = element(
+            "0.content.card",
+            "인기 파스타 15,900원",
+            left = 0,
+            top = 100,
+            clickable = true,
+        )
+
+        val protected = UiTreeReader.propagateSensitiveContext(
+            listOf(edgeSecret, unrelatedCard),
+        )
+
+        assertTrue(protected.first { it.path == edgeSecret.path }.sensitive)
+        assertFalse(protected.first { it.path == unrelatedCard.path }.sensitive)
     }
 
     private fun element(

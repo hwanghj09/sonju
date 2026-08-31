@@ -1,5 +1,8 @@
 package com.hwanghj09.sonju.agent
 
+import com.hwanghj09.sonju.execution.ExecutionFailureReason
+import com.hwanghj09.sonju.execution.ExecutionMethod
+import com.hwanghj09.sonju.perception.AccessibilityScreenParser
 import java.security.MessageDigest
 
 enum class ActionType {
@@ -15,6 +18,7 @@ enum class ActionType {
     CLICK,
     CLICK_COORDINATE,
     SET_TEXT,
+    SUBMIT_TEXT,
     SCROLL_DOWN,
     SCROLL_UP,
     SCROLL_LEFT,
@@ -41,6 +45,8 @@ enum class TrustedSettingsRoute {
 
 enum class PlanSource {
     LOCAL_RULE,
+    APP_ADAPTER,
+    SKILL_FAST_PATH,
     GEMINI_STRUCTURE,
     GEMINI_SEMANTIC_MAP,
 }
@@ -50,6 +56,7 @@ enum class UiNodeAction {
     CLICK,
     LONG_CLICK,
     SET_TEXT,
+    IME_ENTER,
     SCROLL_FORWARD,
     SCROLL_BACKWARD,
     SCROLL_UP,
@@ -156,6 +163,7 @@ data class UiSnapshot(
     val elements: List<UiElement>,
     val treeTruncated: Boolean = false,
     val trustedSettingsRoute: TrustedSettingsRoute? = null,
+    val windowBounds: ScreenBounds? = null,
 ) {
     fun hasSemanticSignal(): Boolean =
         elements.count { element ->
@@ -203,6 +211,8 @@ data class UiSnapshot(
         val canonical = buildString {
             append(packageName).append('|').append(windowTitle.orEmpty()).append('|')
                 .append(windowId).append('|')
+                .append(windowBounds?.let { "${it.left},${it.top},${it.right},${it.bottom}" }.orEmpty())
+                .append('|')
                 .append(treeTruncated).append('|').append(trustedSettingsRoute?.name.orEmpty())
                 .append('\n')
             elements.asSequence()
@@ -260,8 +270,61 @@ data class UiSnapshot(
     fun hasSameRevisionAs(other: UiSnapshot): Boolean =
         epoch == other.epoch && hasSameContentAs(other)
 
+    /** Screenshot authorization tolerates animation geometry drift, never content or epoch drift. */
+    fun hasSameScreenshotSecurityContextAs(other: UiSnapshot): Boolean {
+        if (epoch != other.epoch || packageName == "unknown" || other.packageName == "unknown") {
+            return false
+        }
+        fun UiSnapshot.withoutGeometry() = copy(
+            trustedSettingsRoute = null,
+            windowBounds = null,
+            elements = elements.map { element ->
+                element.copy(bounds = ScreenBounds(0, 0, 0, 0))
+            },
+        )
+        return withoutGeometry().screenFingerprint() == other.withoutGeometry().screenFingerprint()
+    }
+
+    /** Allows text entry after unrelated dynamic content changes, but only into the same target. */
+    fun hasSameEditableTargetAs(other: UiSnapshot, path: String): Boolean {
+        if (packageName == "unknown" || packageName != other.packageName ||
+            windowId != other.windowId || treeTruncated || other.treeTruncated
+        ) return false
+        val expected = elements.singleOrNull {
+            it.path == path && it.editable && it.enabled && it.visible && !it.sensitive
+        } ?: return false
+        val live = other.elements.singleOrNull {
+            it.path == path && it.editable && it.enabled && it.visible && !it.sensitive
+        } ?: return false
+        val stableLabels = listOf(
+            expected.contentDescription,
+            expected.hintText,
+            expected.paneTitle,
+            expected.tooltipText,
+        )
+        val liveLabels = listOf(
+            live.contentDescription,
+            live.hintText,
+            live.paneTitle,
+            live.tooltipText,
+        )
+        val strongIdentity =
+            (!expected.viewId.isNullOrBlank() && expected.viewId == live.viewId) ||
+                (stableLabels.any { !it.isNullOrBlank() } && stableLabels == liveLabels)
+        val uniqueFallback = elements.count {
+            it.editable && it.enabled && it.visible && !it.sensitive
+        } == 1 && other.elements.count {
+            it.editable && it.enabled && it.visible && !it.sensitive
+        } == 1
+        return expected.className == live.className && expected.bounds == live.bounds &&
+            expected.text == live.text && (strongIdentity || uniqueFallback)
+    }
+
+    /** Stable semantic template used by skill matching; it does not persist live node objects. */
+    fun semanticTemplateFingerprint(): String = AccessibilityScreenParser.parse(this).fingerprint
+
     companion object {
-        fun empty(epoch: Long = System.currentTimeMillis()) = UiSnapshot(
+        fun empty(epoch: Long = 0L) = UiSnapshot(
             packageName = "unknown",
             windowTitle = null,
             epoch = epoch,
@@ -307,6 +370,13 @@ data class AgentPlan(
     val revisionReason: String = "",
     /** Assigned locally. Model output cannot roll the revision backwards. */
     val revision: Int = 0,
+    /** Set locally only when screenshot/visual grounding was actually used. */
+    val visualFallback: Boolean = false,
+    /** Present only for a locally retrieved reusable skill. */
+    val skillId: String? = null,
+    val skillVersion: Int? = null,
+    /** Locally learned semantic postcondition; never supplied by a remote planner. */
+    val expectedScreenFingerprint: String? = null,
 )
 
 enum class SafetyDecision {
@@ -325,6 +395,12 @@ data class ExecutionResult(
     val success: Boolean,
     val message: String,
     val completedSteps: Int,
+    val failureReason: ExecutionFailureReason? = null,
+    val method: ExecutionMethod? = null,
+    val beforeFingerprint: String? = null,
+    val afterFingerprint: String? = null,
+    val postconditionSatisfied: Boolean? = null,
+    val goalVerified: Boolean = false,
 )
 
 fun ActionType.displayName(): String = when (this) {
@@ -340,6 +416,7 @@ fun ActionType.displayName(): String = when (this) {
     ActionType.CLICK -> "버튼 누르기"
     ActionType.CLICK_COORDINATE -> "화면 좌표 누르기"
     ActionType.SET_TEXT -> "글자 입력하기"
+    ActionType.SUBMIT_TEXT -> "입력한 검색어 제출하기"
     ActionType.SCROLL_DOWN -> "화면 아래로 내리기"
     ActionType.SCROLL_UP -> "화면 위로 올리기"
     ActionType.SCROLL_LEFT -> "화면 왼쪽으로 넘기기"

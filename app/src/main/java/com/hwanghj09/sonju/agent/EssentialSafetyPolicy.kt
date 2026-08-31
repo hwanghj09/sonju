@@ -31,9 +31,13 @@ object EssentialSafetyPolicy {
             action.description,
             action.target,
         ).joinToString(" ")
-        val paymentCommit = action.type in setOf(ActionType.CLICK, ActionType.CLICK_COORDINATE) &&
+        val paymentCommit = action.type in setOf(
+            ActionType.CLICK,
+            ActionType.CLICK_COORDINATE,
+            ActionType.SUBMIT_TEXT,
+        ) &&
             isPaymentCommit(command, plan, action)
-        val personalInput = action.type == ActionType.SET_TEXT && (
+        val personalInput = action.type in setOf(ActionType.SET_TEXT, ActionType.SUBMIT_TEXT) && (
             containsAny(context, personalDataTerms) ||
                 looksLikePersonalValue(action.value.orEmpty()) ||
                 matchingEditableIsSensitive(action, snapshot)
@@ -62,12 +66,11 @@ object EssentialSafetyPolicy {
         snapshot.packageName != "unknown" && snapshot.elements.none { it.visible && it.sensitive }
 
     /**
-     * Screenshot approval is bound to the exact accessibility revision that initiated capture.
-     * This prevents a non-sensitive page from authorizing a screenshot after the user or app has
-     * already moved to a private page.
+     * Screenshot approval is bound to the same accessibility epoch and security-relevant content.
+     * Geometry-only animation drift is allowed; content or sensitivity drift remains fail-closed.
      */
     fun allowsRemoteScreenshot(expected: UiSnapshot, live: UiSnapshot): Boolean =
-        expected.hasSameRevisionAs(live) &&
+        expected.hasSameScreenshotSecurityContextAs(live) &&
             allowsRemoteScreenshot(expected) &&
             allowsRemoteScreenshot(live)
 
@@ -83,12 +86,19 @@ object EssentialSafetyPolicy {
             } else null
         }
 
-        ActionType.SET_TEXT -> when {
-            action.value == null -> blocked("텍스트 입력 도구에 입력할 값이 없습니다.")
-            action.value.length > MAX_INPUT_LENGTH -> blocked("한 번에 입력할 텍스트가 너무 깁니다.")
-            UiTargetResolver.resolveEditablePath(action, snapshot) == null ->
-                blocked("입력할 필드를 현재 화면에서 하나로 식별하지 못했습니다.")
-            else -> null
+        ActionType.SET_TEXT,
+        ActionType.SUBMIT_TEXT,
+        -> {
+            val path = UiTargetResolver.resolveEditablePath(action, snapshot)
+            when {
+                action.value == null -> blocked("텍스트 입력 도구에 입력할 값이 없습니다.")
+                action.value.length > MAX_INPUT_LENGTH -> blocked("한 번에 입력할 텍스트가 너무 깁니다.")
+                path == null -> blocked("입력할 필드를 현재 화면에서 하나로 식별하지 못했습니다.")
+                action.type == ActionType.SUBMIT_TEXT &&
+                    compact(snapshot.elements.single { it.path == path }.text.orEmpty()) !=
+                    compact(action.value) -> blocked("현재 입력란의 검색어가 요청한 검색어와 달라 제출하지 않습니다.")
+                else -> null
+            }
         }
 
         ActionType.CLICK -> if (action.target.isNullOrBlank()) {

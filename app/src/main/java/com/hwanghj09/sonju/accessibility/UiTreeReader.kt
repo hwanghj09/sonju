@@ -13,10 +13,12 @@ import kotlin.math.max
 
 object UiTreeReader {
     internal const val MAX_ELEMENTS = 2_000
-    private const val MAX_DEPTH = 24
-
+    // Modern Compose screens can place visible controls below 24 wrapper levels. Naver Map's
+    // first visible route button, for example, is exposed at depth 28.
+    private const val MAX_DEPTH = 32
     private data class TraversalState(
         val elements: MutableList<UiElement> = mutableListOf(),
+        var visitedNodes: Int = 0,
         var truncated: Boolean = false,
     )
 
@@ -30,6 +32,10 @@ object UiTreeReader {
     private val sensitiveTerms = setOf(
         "비밀번호", "비번", "password", "passcode", "pin", "otp", "인증번호", "보안코드",
         "카드번호", "card number", "cvc", "cvv", "주민등록",
+    )
+    private val publicCountUnits = setOf(
+        "개", "건", "회", "명", "곳", "점", "분", "초", "시간", "리뷰",
+        "reviews", "items", "results", "minutes", "mins", "hours",
     )
     private val numericRunPattern = Regex(
         "(?<!\\p{Nd})\\p{Nd}(?:[\\s\\p{M}\\p{P}\\p{S}_]*\\p{Nd})*",
@@ -92,12 +98,16 @@ object UiTreeReader {
     )
     private val maskedCredentialPattern = Regex("^[\\s•●○◦*_\\-]{4,19}$")
 
-    fun snapshot(root: AccessibilityNodeInfo?, epoch: Long): UiSnapshot {
-        if (root == null) return UiSnapshot.empty(epoch)
+    fun snapshot(
+        root: AccessibilityNodeInfo?,
+        epoch: Long,
+        displayBounds: ScreenBounds? = null,
+    ): UiSnapshot {
+        if (root == null) return UiSnapshot.empty(epoch).copy(windowBounds = displayBounds)
 
         val traversal = TraversalState()
         traverse(root, "0", 0, traversal)
-        val rawWindowTitle = root.window?.title?.toString()?.take(120)
+        val rawWindowTitle = runCatching { root.window?.title?.toString()?.take(120) }.getOrNull()
         val sensitiveWindow = isSensitiveText(rawWindowTitle)
         val splitProtectedElements = markSplitCredentialClusters(traversal.elements)
         val elements = if (sensitiveWindow) {
@@ -105,13 +115,22 @@ object UiTreeReader {
         } else {
             propagateSensitiveContext(splitProtectedElements)
         }
+        val rootBounds = Rect().also(root::getBoundsInScreen)
+        val windowBounds = displayBounds ?: ScreenBounds(
+            rootBounds.left,
+            rootBounds.top,
+            rootBounds.right,
+            rootBounds.bottom,
+        )
         return UiSnapshot(
-            packageName = root.packageName?.toString().orEmpty().ifBlank { "unknown" },
+            packageName = runCatching { root.packageName?.toString() }.getOrNull()
+                .orEmpty().ifBlank { "unknown" },
             windowTitle = if (sensitiveWindow) "[민감 화면]" else rawWindowTitle,
-            windowId = root.windowId,
+            windowId = runCatching { root.windowId }.getOrDefault(-1),
             epoch = epoch,
             elements = elements,
             treeTruncated = traversal.truncated,
+            windowBounds = windowBounds,
         )
     }
 
@@ -121,79 +140,128 @@ object UiTreeReader {
         depth: Int,
         state: TraversalState,
     ) {
-        if (depth > MAX_DEPTH || state.elements.size >= MAX_ELEMENTS) {
+        if (Thread.currentThread().isInterrupted) {
             state.truncated = true
             return
         }
-
-        val rawText = node.text?.toString()?.trim()?.take(120)
-        val rawDescription = node.contentDescription?.toString()?.trim()?.take(120)
-        val rawStateDescription = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            node.stateDescription?.toString()?.trim()?.take(120)
-        } else {
-            null
+        if (depth > MAX_DEPTH || state.visitedNodes >= MAX_ELEMENTS) {
+            state.truncated = true
+            return
         }
-        val rawHintText = node.hintText?.toString()?.trim()?.take(120)
-        val rawPaneTitle = node.paneTitle?.toString()?.trim()?.take(120)
-        val rawTooltipText = node.tooltipText?.toString()?.trim()?.take(120)
-        val rawViewId = node.viewIdResourceName
-        val sensitive = node.isPassword ||
-            isSensitiveText(rawText) ||
-            isSensitiveText(rawDescription) ||
-            isSensitiveText(rawStateDescription) ||
-            isSensitiveText(rawHintText) ||
-            isSensitiveText(rawPaneTitle) ||
-            isSensitiveText(rawTooltipText) ||
-            isSensitiveText(rawViewId)
-        val bounds = Rect().also(node::getBoundsInScreen)
+        state.visitedNodes += 1
 
-        state.elements += UiElement(
-            path = path,
-            viewId = rawViewId,
-            className = node.className?.toString().orEmpty(),
-            text = rawText.takeUnless { sensitive },
-            contentDescription = rawDescription.takeUnless { sensitive },
-            bounds = ScreenBounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
-            clickable = node.isClickable,
-            editable = node.isEditable,
-            scrollable = node.isScrollable,
-            enabled = node.isEnabled,
-            visible = node.isVisibleToUser,
-            sensitive = sensitive,
-            checkable = node.isCheckable,
-            checked = node.isChecked,
-            selected = node.isSelected,
-            stateDescription = rawStateDescription.takeUnless { sensitive },
-            hintText = rawHintText.takeUnless { sensitive },
-            paneTitle = rawPaneTitle.takeUnless { sensitive },
-            tooltipText = rawTooltipText.takeUnless { sensitive },
-            focusable = node.isFocusable,
-            focused = node.isFocused,
-            accessibilityFocused = node.isAccessibilityFocused,
-            longClickable = node.isLongClickable,
-            dismissable = node.isDismissable,
-            heading = node.isHeading,
-            availableActions = node.actionList.mapNotNullTo(linkedSetOf()) { action ->
+        val element = runCatching {
+            val rawText = node.text?.toString()?.trim()?.take(120)
+            val rawDescription = node.contentDescription?.toString()?.trim()?.take(120)
+            val rawStateDescription = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                node.stateDescription?.toString()?.trim()?.take(120)
+            } else {
+                null
+            }
+            val rawHintText = node.hintText?.toString()?.trim()?.take(120)
+            val rawPaneTitle = node.paneTitle?.toString()?.trim()?.take(120)
+            val rawTooltipText = node.tooltipText?.toString()?.trim()?.take(120)
+            val rawViewId = node.viewIdResourceName
+            val availableActions = node.actionList.mapNotNullTo(linkedSetOf()) { action ->
                 action.toPlannerAction()
-            },
-        )
+            }
+            val semanticValues = listOfNotNull(
+                rawText,
+                rawDescription,
+                rawStateDescription,
+                rawHintText,
+                rawPaneTitle,
+                rawTooltipText,
+            )
+            fun isMirroredPublicValue(value: String?): Boolean = semanticValues.any { context ->
+                isMirroredPublicCount(value, context) || isMirroredPublicAmount(value, context)
+            }
+            val sensitive = node.isPassword ||
+                isSensitiveText(rawText) && !isMirroredPublicValue(rawText) ||
+                isSensitiveText(rawDescription) && !isMirroredPublicValue(rawDescription) ||
+                isSensitiveText(rawStateDescription) && !isMirroredPublicValue(rawStateDescription) ||
+                isSensitiveText(rawHintText) && !isMirroredPublicValue(rawHintText) ||
+                isSensitiveText(rawPaneTitle) && !isMirroredPublicValue(rawPaneTitle) ||
+                isSensitiveText(rawTooltipText) && !isMirroredPublicValue(rawTooltipText) ||
+                isSensitiveText(rawViewId)
+            val bounds = Rect().also(node::getBoundsInScreen)
+            UiElement(
+                path = path,
+                viewId = rawViewId,
+                className = node.className?.toString().orEmpty(),
+                text = rawText.takeUnless { sensitive },
+                contentDescription = rawDescription.takeUnless { sensitive },
+                bounds = ScreenBounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
+                clickable = node.isClickable,
+                editable = hasEditableSemantics(node.isEditable, availableActions),
+                scrollable = node.isScrollable,
+                enabled = node.isEnabled,
+                visible = node.isVisibleToUser,
+                sensitive = sensitive,
+                checkable = node.isCheckable,
+                checked = node.isChecked,
+                selected = node.isSelected,
+                stateDescription = rawStateDescription.takeUnless { sensitive },
+                hintText = rawHintText.takeUnless { sensitive },
+                paneTitle = rawPaneTitle.takeUnless { sensitive },
+                tooltipText = rawTooltipText.takeUnless { sensitive },
+                focusable = node.isFocusable,
+                focused = node.isFocused,
+                accessibilityFocused = node.isAccessibilityFocused,
+                longClickable = node.isLongClickable,
+                dismissable = node.isDismissable,
+                heading = node.isHeading,
+                availableActions = availableActions,
+            )
+        }.getOrNull()
+        if (element == null) {
+            // Accessibility nodes can become stale between two property reads. Keep the usable
+            // siblings instead of discarding the entire screen snapshot for one moving branch.
+            state.truncated = true
+        }
+        if (element?.isUsefulForPlanning() == true) state.elements += element
 
-        for (index in 0 until node.childCount) {
-            if (state.elements.size >= MAX_ELEMENTS) {
+        val childCount = runCatching { node.childCount }.getOrElse {
+            state.truncated = true
+            return
+        }
+        for (index in 0 until childCount) {
+            if (Thread.currentThread().isInterrupted || state.visitedNodes >= MAX_ELEMENTS) {
                 state.truncated = true
                 break
             }
-            val child = node.getChild(index)
+            val child = runCatching { childAt(node, index) }.getOrNull()
             if (child == null) {
                 state.truncated = true
-            } else {
-                traverse(child, "$path.$index", depth + 1, state)
+                continue
             }
+            traverse(child, "$path.$index", depth + 1, state)
         }
     }
 
-    private fun propagateSensitiveContext(elements: List<UiElement>): List<UiElement> {
-        val sensitiveElements = elements.filter { it.sensitive }
+    /** Empty layout wrappers stay out of the model but still count toward the traversal cap. */
+    private fun UiElement.isUsefulForPlanning(): Boolean = sensitive || visible && (
+        !viewId.isNullOrBlank() || !text.isNullOrBlank() || !contentDescription.isNullOrBlank() ||
+            !stateDescription.isNullOrBlank() || !hintText.isNullOrBlank() ||
+            !paneTitle.isNullOrBlank() || !tooltipText.isNullOrBlank() || clickable || editable ||
+            scrollable || checkable || selected || longClickable || dismissable || heading ||
+            availableActions.any { action ->
+                action !in setOf(UiNodeAction.FOCUS, UiNodeAction.CLEAR_FOCUS)
+            }
+        )
+
+    internal fun childAt(node: AccessibilityNodeInfo, index: Int): AccessibilityNodeInfo? =
+        node.getChild(index)
+
+    internal fun hasEditableSemantics(
+        editable: Boolean,
+        availableActions: Set<UiNodeAction>,
+    ): Boolean = editable || UiNodeAction.SET_TEXT in availableActions
+
+    internal fun propagateSensitiveContext(elements: List<UiElement>): List<UiElement> {
+        // Hidden redacted nodes remain redacted, but they cannot contaminate unrelated controls
+        // that happen to occupy the same coordinates after scrolling or WebView clipping.
+        val sensitiveElements = elements.filter { it.sensitive && it.visible }
         if (sensitiveElements.isEmpty()) return elements
 
         return elements.map { element ->
@@ -359,10 +427,11 @@ object UiTreeReader {
 
         val elementParent = element.path.substringBeforeLast('.', missingDelimiterValue = "")
         val sensitiveParent = sensitive.path.substringBeforeLast('.', missingDelimiterValue = "")
+        val verticalDistance = abs(element.bounds.centerY - sensitive.bounds.centerY)
+        val horizontalDistance = abs(element.bounds.centerX - sensitive.bounds.centerX)
         val closeSibling = elementParent.isNotBlank() && elementParent != "0" &&
-            elementParent == sensitiveParent
-        val closeOnScreen = abs(element.bounds.centerY - sensitive.bounds.centerY) <= 120 &&
-            abs(element.bounds.centerX - sensitive.bounds.centerX) <= 1_000
+            elementParent == sensitiveParent && verticalDistance <= 240 && horizontalDistance <= 1_000
+        val closeOnScreen = verticalDistance <= 120 && horizontalDistance <= 240
         return closeSibling || closeOnScreen
     }
 
@@ -375,9 +444,15 @@ object UiTreeReader {
         tooltipText = null,
         sensitive = true,
     )
+    private val concatenatedWonAmountsPattern = Regex(
+        "^(?:(?:\\p{Nd}{1,3}(?:,\\p{Nd}{3})+|\\p{Nd}{1,9})원){2,}$",
+    )
 
-    private fun AccessibilityNodeInfo.AccessibilityAction.toPlannerAction(): UiNodeAction? =
-        when (id) {
+    private fun AccessibilityNodeInfo.AccessibilityAction.toPlannerAction(): UiNodeAction? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            id == AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id
+        ) return UiNodeAction.IME_ENTER
+        return when (id) {
             AccessibilityNodeInfo.ACTION_CLICK -> UiNodeAction.CLICK
             AccessibilityNodeInfo.ACTION_LONG_CLICK -> UiNodeAction.LONG_CLICK
             AccessibilityNodeInfo.ACTION_SET_TEXT -> UiNodeAction.SET_TEXT
@@ -394,6 +469,7 @@ object UiTreeReader {
             AccessibilityNodeInfo.ACTION_DISMISS -> UiNodeAction.DISMISS
             else -> null
         }
+    }
 
     internal fun isSensitiveText(value: String?): Boolean {
         if (value.isNullOrBlank()) return false
@@ -462,7 +538,43 @@ object UiTreeReader {
         }
 
         val suffix = normalized.substring(match.range.last + 1).trimStart()
-        return suffix.startsWith("년") || isExplicitWonAmount(normalized, match)
+        return suffix.startsWith("년") || isExplicitWonAmount(normalized, match) ||
+            isExplicitPublicCount(normalized, match)
+    }
+
+    /** A duplicate visual number is public only when its semantic description names a count. */
+    internal fun isMirroredPublicCount(value: String?, description: String?): Boolean {
+        if (value.isNullOrBlank() || description.isNullOrBlank()) return false
+        val normalizedValue = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        val normalizedDescription = Normalizer.normalize(description, Normalizer.Form.NFKC)
+        val valueRuns = numericRunPattern.findAll(normalizedValue).toList()
+        val descriptionRuns = numericRunPattern.findAll(normalizedDescription).toList()
+        if (valueRuns.size != 1 || descriptionRuns.size != 1) return false
+        val valueDigits = valueRuns.single().value.filter(Char::isDigit)
+        val descriptionRun = descriptionRuns.single()
+        val descriptionDigits = descriptionRun.value.filter(Char::isDigit)
+        return valueDigits.length in 4..5 && valueDigits == descriptionDigits &&
+            isExplicitPublicCount(normalizedDescription, descriptionRun)
+    }
+
+    internal fun isMirroredPublicAmount(value: String?, description: String?): Boolean {
+        if (value.isNullOrBlank() || description.isNullOrBlank()) return false
+        val normalizedValue = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        val normalizedDescription = Normalizer.normalize(description, Normalizer.Form.NFKC)
+        val valueRuns = numericRunPattern.findAll(normalizedValue).toList()
+        val descriptionRuns = numericRunPattern.findAll(normalizedDescription).toList()
+        if (valueRuns.size != 1 || descriptionRuns.size != 1) return false
+        val valueDigits = valueRuns.single().value.filter(Char::isDigit)
+        val descriptionRun = descriptionRuns.single()
+        val descriptionDigits = descriptionRun.value.filter(Char::isDigit)
+        return valueDigits.length in 4..9 && valueDigits == descriptionDigits &&
+            isExplicitWonAmount(normalizedDescription, descriptionRun)
+    }
+
+    private fun isExplicitPublicCount(normalized: String, match: MatchResult): Boolean {
+        val suffix = normalized.substring(match.range.last + 1).trimStart().lowercase()
+        val unit = publicCountUnits.firstOrNull(suffix::startsWith) ?: return false
+        return suffix.drop(unit.length).firstOrNull()?.isLetterOrDigit() != true
     }
 
     private fun isClearlyNonSensitiveDate(
@@ -489,10 +601,17 @@ object UiTreeReader {
 
     private fun isExplicitWonAmount(normalized: String, match: MatchResult): Boolean {
         if (match.value.count(Char::isDigit) !in 4..12) return false
+        if (concatenatedWonAmountsPattern.matches(normalized.replace(Regex("\\s+"), ""))) {
+            return true
+        }
         val suffix = normalized.substring(match.range.last + 1).trimStart()
         if (!suffix.startsWith("원")) return false
         val afterWon = suffix.drop(1)
         if (afterWon.firstOrNull()?.isLetterOrDigit() != true) return true
+        val groupedThousands = match.value.matches(
+            Regex("^\\p{Nd}{1,3}(?:,\\p{Nd}{3})+$"),
+        )
+        if (groupedThousands) return true
         return listOf("짜리", "어치", "입니다").any { allowedSuffix ->
             afterWon.startsWith(allowedSuffix) &&
                 afterWon.drop(allowedSuffix.length).firstOrNull()?.isLetterOrDigit() != true

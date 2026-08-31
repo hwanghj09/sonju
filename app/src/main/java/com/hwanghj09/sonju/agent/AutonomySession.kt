@@ -26,6 +26,8 @@ class AutonomySession(
         val afterPackage: String? = null,
         val afterFingerprint: String? = null,
         val screenChanged: Boolean? = null,
+        val beforeTemplateFingerprint: String? = null,
+        val afterTemplateFingerprint: String? = null,
     )
 
     private val traces = mutableListOf<Trace>()
@@ -92,6 +94,7 @@ class AutonomySession(
             beforeFingerprint = snapshot.screenFingerprint(),
             succeeded = result.success,
             message = result.message.take(MAX_RESULT_LENGTH),
+            beforeTemplateFingerprint = snapshot.semanticTemplateFingerprint(),
         )
         pendingObservationIndex = traces.lastIndex
     }
@@ -106,12 +109,28 @@ class AutonomySession(
             afterFingerprint = afterFingerprint,
             screenChanged = pending.beforePackage != snapshot.packageName ||
                 pending.beforeFingerprint != afterFingerprint,
+            afterTemplateFingerprint = snapshot.semanticTemplateFingerprint(),
         )
         pendingObservationIndex = null
     }
 
     fun canContinue(nowMillis: Long): Boolean =
-        toolCallCount < maxToolCalls && nowMillis - startedAtMillis in 0..maxDurationMillis
+        toolCallCount < maxToolCalls && nowMillis - startedAtMillis in 0..maxDurationMillis &&
+            !hasDetectedLoop()
+
+    fun hasDetectedLoop(): Boolean {
+        if (traces.groupBy { trace ->
+                "${trace.beforeTemplateFingerprint ?: trace.beforeFingerprint}:" +
+                    actionSignature(trace.action)
+            }.any { (_, matching) -> matching.size >= REPEATED_ACTION_LIMIT }
+        ) return true
+        val states = traces.takeLast(4).mapNotNull { it.afterTemplateFingerprint ?: it.afterFingerprint }
+        if (states.size == 4 && states[0] == states[2] && states[1] == states[3] &&
+            states[0] != states[1]
+        ) return true
+        return traces.takeLast(NO_CHANGE_LIMIT).size == NO_CHANGE_LIMIT &&
+            traces.takeLast(NO_CHANGE_LIMIT).all { it.screenChanged == false }
+    }
 
     /** Exact actions that failed twice on the same semantic screen must not be proposed again. */
     fun discouragedActionSignatures(): Set<String> = traces.asSequence()
@@ -170,6 +189,8 @@ class AutonomySession(
         const val DEFAULT_MAX_TOOL_CALLS = 24
         const val DEFAULT_MAX_DURATION_MILLIS = 180_000L
         private const val REPEATED_FAILURE_LIMIT = 2
+        private const val REPEATED_ACTION_LIMIT = 3
+        private const val NO_CHANGE_LIMIT = 3
         private const val MAX_CONTEXT_TRACES = 8
         private const val MAX_CONTEXT_LENGTH = 6_000
         private const val MAX_ROUTE_HINT_LENGTH = 2_000

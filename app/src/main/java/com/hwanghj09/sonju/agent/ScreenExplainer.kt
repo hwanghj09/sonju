@@ -1,5 +1,6 @@
 package com.hwanghj09.sonju.agent
 
+import com.hwanghj09.sonju.task.DeterministicTaskParser
 import java.text.Normalizer
 import java.net.URI
 
@@ -24,6 +25,14 @@ object ScreenExplainer {
         val normalized = Normalizer.normalize(command, Normalizer.Form.NFKC)
             .lowercase()
             .replace(Regex("\\s+"), "")
+        val screenReadRequest = listOf("화면", "내용", "텍스트", "글", "메시지")
+            .any(normalized::contains) &&
+            listOf("읽어", "읽어줘", "읽어주세요", "read")
+                .any(normalized::contains)
+        if (screenReadRequest) return RequestKind.QUESTION
+        if (DeterministicTaskParser.parse(command).entities.containsKey("destination")) {
+            return RequestKind.COMMAND
+        }
         val questionSignals = listOf(
             "어떻게", "방법", "어디", "어느", "어떤", "왜", "뭐야", "뭔가", "무엇",
             "알려", "설명", "사용법", "할수있", "할수있어", "가능해", "되나요", "돼요",

@@ -239,7 +239,9 @@ internal object RouteLearningPolicy {
             -> 0.8
 
             ActionType.CLICK -> 1.0
-            ActionType.SET_TEXT -> 1.2
+            ActionType.SET_TEXT,
+            ActionType.SUBMIT_TEXT,
+            -> 1.2
             ActionType.SCROLL_UP,
             ActionType.SCROLL_DOWN,
             ActionType.SCROLL_LEFT,

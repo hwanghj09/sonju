@@ -78,6 +78,65 @@ class PlanModelsTest {
     }
 
     @Test
+    fun editableTargetComparisonIgnoresOnlyUnrelatedDynamicContent() {
+        val field = UiElement(
+            path = "0.1",
+            viewId = "com.example:id/search",
+            className = "android.widget.EditText",
+            text = null,
+            contentDescription = null,
+            bounds = ScreenBounds(20, 40, 900, 140),
+            clickable = true,
+            editable = true,
+            scrollable = false,
+            enabled = true,
+            visible = true,
+            sensitive = false,
+            hintText = "search",
+        )
+        val before = UiSnapshot(
+            packageName = "com.example",
+            windowTitle = "Search",
+            windowId = 7,
+            epoch = 10,
+            elements = listOf(
+                field,
+                field.copy(
+                    path = "0.2",
+                    viewId = "com.example:id/banner",
+                    className = "android.widget.TextView",
+                    text = "Banner 1",
+                    editable = false,
+                    hintText = null,
+                ),
+            ),
+        )
+        val bannerChanged = before.copy(
+            epoch = 11,
+            elements = before.elements.map { element ->
+                if (element.path == "0.2") element.copy(text = "Banner 2") else element
+            },
+        )
+
+        assertFalse(before.hasSameRevisionAs(bannerChanged))
+        assertTrue(before.hasSameEditableTargetAs(bannerChanged, field.path))
+        assertFalse(
+            before.hasSameEditableTargetAs(
+                bannerChanged.copy(
+                    elements = bannerChanged.elements.map { element ->
+                        if (element.path == field.path) {
+                            element.copy(bounds = ScreenBounds(20, 240, 900, 340))
+                        } else {
+                            element
+                        }
+                    },
+                ),
+                field.path,
+            ),
+        )
+    }
+
+    @Test
     fun compactModelContextOmitsSensitiveNodeGeometryAndPath() {
         val snapshot = snapshotWith(lastText = "확인").copy(
             elements = listOf(

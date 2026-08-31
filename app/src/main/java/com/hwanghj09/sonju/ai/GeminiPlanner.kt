@@ -24,21 +24,21 @@ data class VisualScreenResult(
 
 class GeminiPlanner(
     private val executor: ExecutorService = Executors.newSingleThreadExecutor(),
-) : AutoCloseable {
+) : AutoCloseable, ExploratoryPlanClient, VisualGroundingClient, ScreenExplanationClient {
     private val requestGeneration = AtomicLong(0L)
     private val connectionLock = Any()
 
     @Volatile
     private var activeConnection: HttpURLConnection? = null
 
-    val isConfigured: Boolean get() = BuildConfig.GEMINI_API_KEY.isNotBlank()
+    override val isConfigured: Boolean get() = BuildConfig.GEMINI_API_KEY.isNotBlank()
 
-    fun planAsync(
+    override fun planAsync(
         command: String,
         snapshot: UiSnapshot,
         semanticMapJpegBase64: String?,
-        userFeedbackGuidance: String? = null,
-        autonomyContext: String? = null,
+        userFeedbackGuidance: String?,
+        autonomyContext: String?,
         callback: (Result<AgentPlan>) -> Unit,
     ) {
         val requestId = requestGeneration.incrementAndGet()
@@ -58,11 +58,11 @@ class GeminiPlanner(
         }
     }
 
-    fun explainScreenAsync(
+    override fun explainScreenAsync(
         command: String,
         snapshot: UiSnapshot,
         semanticMapJpegBase64: String,
-        browserUrl: String? = null,
+        browserUrl: String?,
         callback: (Result<String>) -> Unit,
     ) {
         val requestId = requestGeneration.incrementAndGet()
@@ -81,7 +81,7 @@ class GeminiPlanner(
         }
     }
 
-    fun analyzeScreenshotAsync(
+    override fun analyzeScreenshotAsync(
         command: String,
         screenshotJpegBase64: String,
         question: Boolean,
@@ -198,8 +198,7 @@ class GeminiPlanner(
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(request.toString()) }
             val status = connection.responseCode
             if (status !in 200..299) {
-                connection.errorStream?.close()
-                throw GeminiPlannerException("Gemini request failed with HTTP $status")
+                throw GeminiPlannerException(connection.failureMessage(status))
             }
             val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val steps = JSONObject(response).optJSONArray("steps")
@@ -307,8 +306,7 @@ class GeminiPlanner(
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(request.toString()) }
             val status = connection.responseCode
             if (status !in 200..299) {
-                connection.errorStream?.close()
-                throw GeminiPlannerException("Gemini request failed with HTTP $status")
+                throw GeminiPlannerException(connection.failureMessage(status))
             }
             val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val steps = JSONObject(response).optJSONArray("steps")
@@ -354,6 +352,7 @@ class GeminiPlanner(
             snapshot,
             userFeedbackGuidance,
             autonomyContext,
+            visualFallbackActive = semanticMapJpegBase64 != null,
         )
         val content = JSONArray().put(JSONObject().put("type", "text").put("text", prompt))
         if (!semanticMapJpegBase64.isNullOrBlank()) {
@@ -374,7 +373,7 @@ class GeminiPlanner(
             .put("model", BuildConfig.GEMINI_MODEL)
             .put("input", input)
             .put("store", false)
-            .put("response_format", responseFormat())
+            .put("response_format", responseFormat(allowVisualCoordinates = semanticMapJpegBase64 != null))
 
         val connection = (URL(INTERACTIONS_ENDPOINT).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -399,8 +398,7 @@ class GeminiPlanner(
             }
             val status = connection.responseCode
             if (status !in 200..299) {
-                connection.errorStream?.close()
-                throw GeminiPlannerException("Gemini request failed with HTTP $status")
+                throw GeminiPlannerException(connection.failureMessage(status))
             }
             val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             return parsePlan(response, semanticMapJpegBase64 != null)
@@ -417,6 +415,7 @@ class GeminiPlanner(
         snapshot: UiSnapshot,
         userFeedbackGuidance: String?,
         autonomyContext: String?,
+        visualFallbackActive: Boolean,
     ): String = """
         당신은 Android 접근성 기반 자율 조작 에이전트 'SonjuAI'의 계획기다.
         사용자 요청을 실행하기 전에 반드시 전체 목표와 경로를 먼저 구조화한다. 화면 구조와 이미지
@@ -441,14 +440,18 @@ class GeminiPlanner(
         - CLICK은 접근성 구조의 text, content description, hint, view ID 또는 path로 하나를 식별할 때 쓴다.
         - CLICK_COORDINATE는 접근성 노드로 표현되지 않는 Canvas/WebView 대상의 중심을 현재 화면의
           왼쪽 위 0,0~오른쪽 아래 1,1 정규화 x_ratio/y_ratio로 확실히 찾을 때만 쓴다.
+        - ${if (visualFallbackActive) "제공된 시각 폴백 배치도 안에서만 좌표를 제안할 수 있다." else "시각 폴백 입력이 없으므로 CLICK_COORDINATE는 금지된다."}
         - SET_TEXT target은 편집 가능한 노드의 text, hint, view ID 또는 path이고 value는 실제 입력값이다.
         - SCROLL_UP/DOWN/LEFT/RIGHT는 목표가 화면 밖에 있거나 페이지 전환 제스처가 필요할 때 쓴다.
         - OPEN_APP target은 앱 이름이다. 현재 앱과 목표 앱이 다르면 탐색보다 먼저 사용한다.
         - 같은 화면에서 두 번 실패한 동작은 그대로 반복하지 말고 selector, 도구 또는 경로를 바꾼다.
         - 비용과 지연을 줄이기 위해 접근성 노드 도구를 좌표 도구보다 우선하고, 과거 성공 경로가
           현재 화면과 맞으면 더 짧은 경로를 응용한다.
+        - 음식 주문에서 음식 종류만 주어졌다면 검색까지 진행할 수 있지만, 여러 식당·메뉴·옵션 중
+          하나를 임의로 고르지 않는다. 화면에서 후보가 하나로 확정되지 않으면 행동을 꾸며내지 말고
+          사용자가 선택할 수 있는 상태에서 멈춘다.
         - 결제 최종 확정과 개인정보/인증정보 입력도 사용자가 명시한 목표에 필요하면 계획할 수 있지만,
-          앱의 별도 확인 단계가 실행 전에 사용자에게 승인받는다. 민감값을 추측하거나 화면에서 복사하지 않는다.
+          verifier가 결제·민감정보 동작을 차단할 수 있다. 민감값을 추측하거나 화면에서 복사하지 않는다.
 
         사용자별 과거 평가:
         ${userFeedbackGuidance ?: "관련 평가 없음"}
@@ -463,9 +466,11 @@ class GeminiPlanner(
         ${snapshot.compactText()}
     """.trimIndent()
 
-    private fun responseFormat(): JSONObject {
+    private fun responseFormat(allowVisualCoordinates: Boolean): JSONObject {
         val actionTypes = JSONArray().apply {
-            ActionType.entries.forEach { put(it.name) }
+            ActionType.entries
+                .filter { allowVisualCoordinates || it != ActionType.CLICK_COORDINATE }
+                .forEach { put(it.name) }
         }
         val actionSchema = JSONObject()
             .put("type", "object")
@@ -653,6 +658,7 @@ class GeminiPlanner(
             strategy = json.getJSONArray("strategy").toStrings(12, 300),
             successCriteria = json.getJSONArray("success_criteria").toStrings(8, 300),
             revisionReason = json.getString("revision_reason").take(300),
+            visualFallback = usedSemanticMap,
         )
     }
 
@@ -665,12 +671,28 @@ class GeminiPlanner(
         """.trimIndent()
     }
 
+    private fun HttpURLConnection.failureMessage(status: Int): String {
+        val errorBody = runCatching {
+            errorStream?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+                reader.readText().take(4_096)
+            }
+        }.getOrNull().orEmpty()
+        return if (
+            errorBody.contains("API key not valid", ignoreCase = true) ||
+            errorBody.contains("API_KEY_INVALID", ignoreCase = true)
+        ) {
+            "Gemini API key is invalid"
+        } else {
+            "Gemini request failed with HTTP $status"
+        }
+    }
+
     override fun close() {
         cancelPending()
         executor.shutdownNow()
     }
 
-    fun cancelPending() {
+    override fun cancelPending() {
         requestGeneration.incrementAndGet()
         synchronized(connectionLock) {
             activeConnection?.disconnect()

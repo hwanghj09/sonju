@@ -1,9 +1,11 @@
 package com.hwanghj09.sonju
 
+import com.hwanghj09.sonju.agent.ActionType
 import com.hwanghj09.sonju.agent.ScreenBounds
 import com.hwanghj09.sonju.agent.UiElement
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.shopping.BaeminNavigator
+import com.hwanghj09.sonju.shopping.BaeminOrderLocalPlanner
 import com.hwanghj09.sonju.shopping.BaeminOrderRequestParser
 import com.hwanghj09.sonju.shopping.BaeminScreenAction
 import org.junit.Assert.assertEquals
@@ -15,6 +17,7 @@ import org.junit.Test
 class BaeminOrderModelsTest {
     @Test
     fun parsesBaeminOrderQuery() {
+        assertEquals("피자", BaeminOrderRequestParser.parse("배민에서 피자 시켜줘")?.query)
         assertEquals("피자", BaeminOrderRequestParser.parse("배민 들어가서 피자 시켜줘")?.query)
         assertEquals("치즈 피자", BaeminOrderRequestParser.parse("배달의민족에서 치즈 피자 주문해 줘")?.query)
     }
@@ -23,6 +26,8 @@ class BaeminOrderModelsTest {
     fun ignoresNonBaeminOrNonOrderCommands() {
         assertNull(BaeminOrderRequestParser.parse("피자 시켜줘"))
         assertNull(BaeminOrderRequestParser.parse("배민 열어 줘"))
+        assertNull(BaeminOrderRequestParser.parse("배민 주문 내역 보여줘"))
+        assertNull(BaeminOrderRequestParser.parse("배민에서 주문 검색해줘"))
     }
 
     @Test
@@ -87,7 +92,7 @@ class BaeminOrderModelsTest {
     }
 
     @Test
-    fun ambiguousOrderButtonsUseFirstMatchWithoutSafetyCheck() {
+    fun ambiguousOrderButtonsStopInsteadOfChoosingTheFirstMatch() {
         val action = BaeminNavigator.next(
             snapshot(
                 element("0.0", text = "주문하기", clickable = true),
@@ -97,7 +102,7 @@ class BaeminOrderModelsTest {
             6,
         )
 
-        assertTrue(action is BaeminScreenAction.Click)
+        assertTrue(action is BaeminScreenAction.Stop)
     }
 
     @Test
@@ -111,14 +116,14 @@ class BaeminOrderModelsTest {
     }
 
     @Test
-    fun anyVisibleCompletionEvidenceIsAccepted() {
+    fun completionRequiresNewEvidenceAfterTheFinalCommit() {
         val oldCompletion = snapshot(element("0.old", text = "이전 주문 완료"))
         val newCompletion = snapshot(element("0.new", text = "주문이 접수되었습니다"))
         val finalButtonStillVisible = snapshot(
             element("0.final", text = "주문하기", clickable = true),
         )
 
-        assertEquals(BaeminScreenAction.Complete, BaeminNavigator.next(oldCompletion, "피자", 1))
+        assertTrue(BaeminNavigator.next(oldCompletion, "피자", 1) is BaeminScreenAction.Stop)
         assertEquals(
             BaeminScreenAction.Complete,
             BaeminNavigator.next(
@@ -137,6 +142,58 @@ class BaeminOrderModelsTest {
                 completionBaseline = emptyList(),
             ),
         )
+    }
+
+    @Test
+    fun localPlannerBootstrapsTheCorrectAppAndContinuesAfterObservation() {
+        val plan = requireNotNull(
+            BaeminOrderLocalPlanner.plan("배민에서 피자 시켜줘", UiSnapshot.empty()),
+        )
+
+        assertEquals("배민", plan.actions.first().target)
+        assertEquals(com.hwanghj09.sonju.agent.ActionType.OPEN_APP, plan.actions.first().type)
+        assertTrue(plan.continueAfterAction)
+    }
+
+    @Test
+    fun localPlannerWaitsForBaeminContentInsteadOfFallingThrough() {
+        val plan = requireNotNull(
+            BaeminOrderLocalPlanner.plan(
+                "배민에서 피자 시켜줘",
+                UiSnapshot.empty(epoch = 1).copy(packageName = BaeminNavigator.PACKAGE_NAME),
+            ),
+        )
+
+        assertEquals(ActionType.WAIT, plan.actions.first().type)
+        assertTrue(plan.continueAfterAction)
+    }
+
+    @Test
+    fun localPlannerUsesVerifiedSearchNodesButDoesNotChooseAmbiguousMenuResults() {
+        val openSearch = requireNotNull(
+            BaeminOrderLocalPlanner.plan(
+                "배민에서 피자 시켜줘",
+                snapshot(element("0.search", text = "검색", clickable = true)),
+            ),
+        )
+        assertEquals("0.search", openSearch.actions.first().target)
+
+        val setText = requireNotNull(
+            BaeminOrderLocalPlanner.plan(
+                "배민에서 피자 시켜줘",
+                snapshot(element("0.input", text = "", editable = true)),
+            ),
+        )
+        assertEquals("피자", setText.actions.first().value)
+
+        val ambiguous = BaeminOrderLocalPlanner.plan(
+            "배민에서 피자 시켜줘",
+            snapshot(
+                element("0.0", text = "피자 가게 A", clickable = true),
+                element("0.1", text = "피자 가게 B", clickable = true, top = 100),
+            ),
+        )
+        assertNull(ambiguous)
     }
 
     private fun snapshot(vararg elements: UiElement) = UiSnapshot(

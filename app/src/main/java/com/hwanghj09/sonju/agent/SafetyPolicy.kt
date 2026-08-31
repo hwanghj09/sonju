@@ -250,7 +250,7 @@ object SafetyPolicy {
                 )
             }
 
-            if (action.type == ActionType.SET_TEXT) {
+            if (action.type in setOf(ActionType.SET_TEXT, ActionType.SUBMIT_TEXT)) {
                 val target = action.target.orEmpty()
                 if (containsSensitiveValue(action.value.orEmpty()) ||
                     containsShortNumericValue(action.value.orEmpty())
@@ -312,6 +312,7 @@ object SafetyPolicy {
         val needsConfirmation = plan.source != PlanSource.LOCAL_RULE || plan.actions.any { action ->
             action.type in setOf(
                 ActionType.SET_TEXT,
+                ActionType.SUBMIT_TEXT,
                 ActionType.OPEN_MESSAGES,
                 ActionType.OPEN_DIALER,
             ) || confirmationTargetTerms.any { term ->
@@ -398,6 +399,7 @@ object SafetyPolicy {
 
     private fun ActionType.requiresStableScreen(): Boolean = this in setOf(
         ActionType.SET_TEXT,
+        ActionType.SUBMIT_TEXT,
         ActionType.SCROLL_DOWN,
         ActionType.SCROLL_UP,
     )

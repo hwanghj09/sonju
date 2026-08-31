@@ -40,19 +40,24 @@ import com.google.android.material.textfield.TextInputEditText
 import com.hwanghj09.sonju.accessibility.SonjuAccessibilityService
 import com.hwanghj09.sonju.agent.ActionType
 import com.hwanghj09.sonju.agent.AgentPlan
+import com.hwanghj09.sonju.agent.AppWorkflowRouter
 import com.hwanghj09.sonju.agent.AutonomySession
 import com.hwanghj09.sonju.agent.ContextLifetime
-import com.hwanghj09.sonju.agent.EssentialSafetyPolicy
 import com.hwanghj09.sonju.agent.LearnedRouteMemory
 import com.hwanghj09.sonju.agent.PlanSource
 import com.hwanghj09.sonju.agent.RuleBasedPlanner
 import com.hwanghj09.sonju.agent.RiskLevel
 import com.hwanghj09.sonju.agent.SafetyAssessment
 import com.hwanghj09.sonju.agent.SafetyDecision
+import com.hwanghj09.sonju.agent.ScreenExplainer
+import com.hwanghj09.sonju.agent.SonjuAgentRuntime
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.agent.displayName
 import com.hwanghj09.sonju.ai.GeminiPlanner
+import com.hwanghj09.sonju.shopping.BaeminOrderLocalPlanner
 import com.hwanghj09.sonju.voice.WakeWordService
+import com.hwanghj09.sonju.verifier.VerificationResult
+import com.hwanghj09.sonju.verifier.VerifiedPlan
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
@@ -76,6 +81,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var competingControls: List<View> = emptyList()
 
     private val geminiPlanner = GeminiPlanner()
+    private val architectureRuntime by lazy { SonjuAgentRuntime.get(this) }
     private lateinit var learnedRouteMemory: LearnedRouteMemory
     private var autonomySession: AutonomySession? = null
     private var textToSpeech: TextToSpeech? = null
@@ -93,6 +99,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var voiceOverlaySessionId = 0L
     private var busy = false
     private var requestGeneration = 0L
+    private var automaticCommandRunnable: Runnable? = null
 
     private val voiceLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -332,6 +339,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             false,
         )
         if (!requestedFromOverlay) {
+            if (busy || confirmationDialog != null) {
+                requestGeneration += 1
+                geminiPlanner.cancelPending()
+                SonjuAccessibilityService.instance?.stopCurrentExecution()
+                autonomySession = null
+                setBusy(false, keepProgress = false)
+            }
             clearOverlayContext()
             when {
                 directVoiceCommand != null -> scheduleAutomaticCommand(directVoiceCommand)
@@ -381,7 +395,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun scheduleAutomaticCommand(command: String) {
-        commandInput.post {
+        automaticCommandRunnable?.let(commandInput::removeCallbacks)
+        val runnable = Runnable {
+            automaticCommandRunnable = null
             val safeCommand = command.take(500)
             commandInput.setText(safeCommand)
             commandInput.setSelection(safeCommand.length)
@@ -389,6 +405,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             resumeWakeWordListening()
             handleCommand()
         }
+        automaticCommandRunnable = runnable
+        commandInput.post(runnable)
     }
 
     private fun updateServiceStatus() {
@@ -579,6 +597,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun runScreenQuickCommand(command: String) {
         commandInput.setText(command)
         commandInput.setSelection(command.length)
+        attachRecentApplicationContext()
         if (fromOverlay && externalSnapshot != null) {
             handleCommand()
         } else {
@@ -591,6 +610,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun handleCommand() {
         if (busy) return
+        attachRecentApplicationContext()
         if (fromOverlay && !ContextLifetime.isFresh(
                 SystemClock.elapsedRealtime(),
                 externalContextCapturedAtElapsedRealtime,
@@ -630,7 +650,78 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             ).also { autonomySession = it }
         session.observe(snapshot)
 
-        val localPlan = RuleBasedPlanner.plan(command, snapshot)
+        if (ScreenExplainer.isExplanationRequest(command)) {
+            if (snapshot.packageName == "unknown") {
+                finishBusyWithMessage(getString(R.string.quick_requires_overlay), success = false)
+                return
+            }
+            val appLabel = runCatching {
+                @Suppress("DEPRECATION")
+                packageManager.getApplicationLabel(
+                    packageManager.getApplicationInfo(snapshot.packageName, 0),
+                ).toString()
+            }.getOrDefault(snapshot.windowTitle.orEmpty())
+            val explanation = ScreenExplainer.explain(
+                command = command,
+                appLabel = appLabel,
+                snapshot = snapshot,
+                browserUrl = ScreenExplainer.detectBrowserUrl(snapshot),
+            )
+            autonomySession = null
+            finishBusyWithMessage(explanation, success = true)
+            speak(explanation)
+            return
+        }
+
+        val baeminPlan = BaeminOrderLocalPlanner.plan(command, snapshot)
+        if (baeminPlan != null) {
+            showProgress(getString(R.string.progress_check))
+            handlePlan(command, snapshot, baeminPlan)
+            return
+        }
+
+        val appWorkflowRoute = SonjuAccessibilityService.instance
+            ?.resolveAppWorkflowRoute(command)
+            ?: AppWorkflowRouter.route(command)
+        val appEntryPlan = appWorkflowRoute?.let { route ->
+            AppWorkflowRouter.entryPlan(
+                command = command,
+                route = route,
+                currentPackage = snapshot.packageName,
+                targetPackage = SonjuAccessibilityService.instance
+                    ?.resolveInstalledAppPackage(route.appLabel),
+            )
+        }
+        if (appEntryPlan != null) {
+            showProgress(getString(R.string.progress_check))
+            handlePlan(command, snapshot, appEntryPlan)
+            return
+        }
+
+        val fastPathPlan = architectureRuntime.fastPathPlan(command, snapshot)
+        if (fastPathPlan != null) {
+            showProgress(getString(R.string.progress_check))
+            handlePlan(command, snapshot, fastPathPlan)
+            return
+        }
+        val inAppPlan = appWorkflowRoute?.let { route ->
+            AppWorkflowRouter.inAppPlan(
+                command,
+                route,
+                snapshot,
+                successfulActions = session.successfulActions(),
+            )
+        }
+        if (inAppPlan != null) {
+            showProgress(getString(R.string.progress_check))
+            handlePlan(command, snapshot, inAppPlan)
+            return
+        }
+        val localPlan = if (appWorkflowRoute == null) {
+            RuleBasedPlanner.plan(command, snapshot)
+        } else {
+            null
+        }
         if (localPlan != null) {
             showProgress(getString(R.string.progress_check))
             handlePlan(command, snapshot, localPlan)
@@ -700,8 +791,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             ?.acceptPlan(candidate, snapshot)
             ?: candidate
         if (plan.goalCompleted && plan.actions.none { it.type != ActionType.FINISH }) {
+            if (!architectureRuntime.goalSatisfied(command, plan, snapshot, autonomySession)) {
+                showBlocked(
+                    SafetyAssessment(
+                        SafetyDecision.BLOCK,
+                        RiskLevel.BLOCKED,
+                        "최종 목표 상태를 실제 화면에서 확인하지 못해 완료로 처리하지 않았습니다.",
+                    ),
+                )
+                return
+            }
             autonomySession?.takeIf { it.finalGoal == command }?.let { session ->
                 learnedRouteMemory.remember(session, plan)
+                architectureRuntime.rememberSuccessfulSkill(command, session, snapshot)
             }
             autonomySession = null
             val message = "최종 목표를 화면에서 확인했어요. " +
@@ -720,19 +822,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             )
             return
         }
-        val assessment = EssentialSafetyPolicy.evaluate(command, plan, snapshot)
-        when (assessment.decision) {
-            SafetyDecision.BLOCK -> showBlocked(assessment)
-            SafetyDecision.REQUIRE_CONFIRMATION ->
-                showConfirmation(command, plan, assessment, snapshot)
-            SafetyDecision.ALLOW -> executePlan(command, plan, snapshot)
+        when (val verification = architectureRuntime.verify(command, plan, snapshot)) {
+            is VerificationResult.Blocked -> showBlocked(
+                SafetyAssessment(SafetyDecision.BLOCK, RiskLevel.BLOCKED, verification.reason),
+            )
+            is VerificationResult.NeedsReplan -> showBlocked(
+                SafetyAssessment(SafetyDecision.BLOCK, RiskLevel.BLOCKED, verification.reason),
+            )
+            is VerificationResult.NeedsConfirmation ->
+                showConfirmation(command, plan, verification, snapshot)
+            is VerificationResult.Allowed -> executePlan(
+                command,
+                verification.verifiedPlan,
+                snapshot,
+            )
         }
     }
 
     private fun showConfirmation(
         command: String,
         plan: AgentPlan,
-        assessment: SafetyAssessment,
+        verification: VerificationResult.NeedsConfirmation,
         snapshot: UiSnapshot,
     ) {
         val confirmationSessionId = externalContextSessionId
@@ -745,6 +855,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     ?.let {
                         when (action.type) {
                             ActionType.SET_TEXT -> "\n  입력할 내용: “$it”"
+                            ActionType.SUBMIT_TEXT -> "\n  그대로 검색할 내용: “$it”"
                             ActionType.CLICK -> "\n  목표 상태: $it"
                             else -> ""
                         }
@@ -765,7 +876,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             appendLine()
             appendLine(steps)
             appendLine()
-            append(assessment.reason)
+            appendLine(verification.summary)
+            append(verification.reason)
         }
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(R.string.confirm_title)
@@ -795,7 +907,39 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         if (confirmationGeneration == requestGeneration &&
                             !isFinishing && !isDestroyed
                         ) {
-                            executePlan(command, plan, snapshot)
+                            when (val confirmed = architectureRuntime.verify(
+                                command = command,
+                                plan = plan,
+                                snapshot = snapshot,
+                                userConfirmed = true,
+                            )) {
+                                is VerificationResult.Allowed -> executePlan(
+                                    command,
+                                    confirmed.verifiedPlan,
+                                    snapshot,
+                                )
+                                is VerificationResult.Blocked -> showBlocked(
+                                    SafetyAssessment(
+                                        SafetyDecision.BLOCK,
+                                        RiskLevel.BLOCKED,
+                                        confirmed.reason,
+                                    ),
+                                )
+                                is VerificationResult.NeedsReplan -> showBlocked(
+                                    SafetyAssessment(
+                                        SafetyDecision.BLOCK,
+                                        RiskLevel.BLOCKED,
+                                        confirmed.reason,
+                                    ),
+                                )
+                                is VerificationResult.NeedsConfirmation -> showBlocked(
+                                    SafetyAssessment(
+                                        SafetyDecision.BLOCK,
+                                        RiskLevel.BLOCKED,
+                                        "확인을 실행 권한으로 변환하지 못했습니다.",
+                                    ),
+                                )
+                            }
                         }
                     },
                     CONFIRMATION_DISMISS_DELAY_MILLIS,
@@ -829,7 +973,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         clearOverlayContext()
     }
 
-    private fun executePlan(command: String, plan: AgentPlan, snapshot: UiSnapshot) {
+    private fun executePlan(
+        command: String,
+        verifiedPlan: VerifiedPlan,
+        snapshot: UiSnapshot,
+    ) {
+        val plan = verifiedPlan.plan
         val service = SonjuAccessibilityService.instance
         if (service == null || !isServiceEnabledInSettings()) {
             finishBusyWithMessage(getString(R.string.accessibility_required), success = false)
@@ -839,35 +988,41 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         setBusy(true)
         showProgress(getString(R.string.progress_execute))
-        val shouldReturn = fromOverlay
+        val shouldReturn = fromOverlay && plan.actions.any { it.type.requiresExternalScreen() }
         val executionRequestGeneration = requestGeneration
+        val executionSession = autonomySession?.takeIf { it.finalGoal == command }
         fromOverlay = false
         service.executePlan(
-            plan,
+            verifiedPlan,
             expectedSnapshot = snapshot,
             returnToPreviousApp = shouldReturn,
         ) { result ->
+            executionSession?.recordExecution(plan, snapshot, result)
+            architectureRuntime.recordExecution(command, verifiedPlan, result)
+            val adaptivePlan = plan.continueAfterAction || plan.source in setOf(
+                PlanSource.SKILL_FAST_PATH,
+                PlanSource.GEMINI_STRUCTURE,
+                PlanSource.GEMINI_SEMANTIC_MAP,
+            )
+            val continuing = result.success && adaptivePlan &&
+                executionSession?.canContinue(SystemClock.elapsedRealtime()) == true
+            if (continuing) {
+                service.continueAutonomousCommand(command, executionSession)
+                if (autonomySession === executionSession) autonomySession = null
+            }
             runOnUiThread {
                 if (executionRequestGeneration != requestGeneration || isFinishing || isDestroyed) {
                     return@runOnUiThread
                 }
-                val session = autonomySession?.takeIf { it.finalGoal == command }
-                session?.recordExecution(plan, snapshot, result)
-                val adaptivePlan = plan.continueAfterAction || plan.source in setOf(
-                    PlanSource.GEMINI_STRUCTURE,
-                    PlanSource.GEMINI_SEMANTIC_MAP,
-                )
-                if (adaptivePlan && session?.canContinue(SystemClock.elapsedRealtime()) != false) {
-                    service.continueAutonomousCommand(command, session)
+                if (continuing) {
                     finishBusyWithMessage(
-                        if (result.success) "화면 변화를 확인하고 다음 도구를 계획하고 있어요."
-                        else "실패 결과를 반영해 다른 경로를 계획하고 있어요.",
-                        success = result.success,
+                        "화면 변화를 확인하고 다음 도구를 계획하고 있어요.",
+                        success = true,
                     )
                     return@runOnUiThread
                 }
                 val message = if (result.success) {
-                    session?.let { learnedRouteMemory.remember(it, plan) }
+                    executionSession?.let { learnedRouteMemory.remember(it, plan) }
                     plan.summary.ifBlank { getString(R.string.action_completed) }
                 } else {
                     result.message.ifBlank { getString(R.string.action_failed) }
@@ -996,6 +1151,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         externalContextSessionId = 0L
     }
 
+    private fun attachRecentApplicationContext(): Boolean {
+        if (fromOverlay && externalSnapshot != null) return true
+        val context = SonjuAccessibilityService.instance?.recentApplicationContext() ?: return false
+        fromOverlay = true
+        externalSnapshot = context.snapshot
+        externalSemanticMapJpegBase64 = context.semanticMapJpegBase64
+        externalContextCapturedAtElapsedRealtime = context.capturedAtElapsedRealtime
+        externalContextSessionId = context.sessionId
+        scheduleOverlayContextExpiry(context.sessionId, context.capturedAtElapsedRealtime)
+        return true
+    }
+
     private fun scheduleOverlayContextExpiry(sessionId: Long, capturedAtElapsedRealtime: Long) {
         contextExpiryRunnable?.let(contextExpiryHandler::removeCallbacks)
         val remaining = ContextLifetime.remainingMillis(
@@ -1016,9 +1183,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun ActionType.requiresExternalScreen(): Boolean = this in setOf(
         ActionType.CLICK,
+        ActionType.CLICK_COORDINATE,
         ActionType.SET_TEXT,
+        ActionType.SUBMIT_TEXT,
         ActionType.SCROLL_DOWN,
         ActionType.SCROLL_UP,
+        ActionType.SCROLL_LEFT,
+        ActionType.SCROLL_RIGHT,
         ActionType.BACK,
     )
 

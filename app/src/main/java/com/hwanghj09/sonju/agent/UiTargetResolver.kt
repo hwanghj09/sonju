@@ -22,7 +22,7 @@ object UiTargetResolver {
     }
 
     fun resolveEditablePath(action: AgentAction, snapshot: UiSnapshot): String? {
-        if (action.type != ActionType.SET_TEXT) return null
+        if (action.type !in setOf(ActionType.SET_TEXT, ActionType.SUBMIT_TEXT)) return null
         val target = action.target.orEmpty()
         val editable = snapshot.elements.asSequence()
             .filter { element -> element.visible && element.enabled && element.editable }
