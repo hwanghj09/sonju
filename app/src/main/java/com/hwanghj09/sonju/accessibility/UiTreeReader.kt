@@ -29,10 +29,24 @@ object UiTreeReader {
         val numericValue: Int?,
     )
 
+    private val normalizedIgnoredPattern = Regex("[\\p{Cf}\\p{Cc}\\p{M}]")
+    private val compactIgnoredPattern = Regex("[\\p{Cf}\\p{Cc}\\p{M}\\s\\p{P}\\p{S}_]+")
     private val sensitiveTerms = setOf(
         "비밀번호", "비번", "password", "passcode", "pin", "otp", "인증번호", "보안코드",
         "카드번호", "card number", "cvc", "cvv", "주민등록",
     )
+    private val compactSensitiveTerms = sensitiveTerms.map(::compact)
+    private val asciiSensitiveTermPatterns = compactSensitiveTerms
+        .filter { term -> term.isNotEmpty() && term.all { it in 'a'..'z' || it in '0'..'9' } }
+        .map { term ->
+            val separated = term.toCharArray().joinToString("[\\s\\p{M}\\p{P}\\p{S}_]*") {
+                Regex.escape(it.toString())
+            }
+            Regex("(?<![a-z0-9])$separated(?![a-z0-9])")
+        }
+    private val literalSensitiveTerms = compactSensitiveTerms.filterNot { term ->
+        term.isNotEmpty() && term.all { it in 'a'..'z' || it in '0'..'9' }
+    }
     private val publicCountUnits = setOf(
         "개", "건", "회", "명", "곳", "점", "분", "초", "시간", "리뷰",
         "reviews", "items", "results", "minutes", "mins", "hours",
@@ -475,9 +489,9 @@ object UiTreeReader {
         if (value.isNullOrBlank()) return false
         val normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
             .lowercase()
-            .replace(Regex("[\\p{Cf}\\p{Cc}\\p{M}]"), "")
+            .replace(normalizedIgnoredPattern, "")
         return isCredentialSlotDescription(normalized) ||
-            sensitiveTerms.any { term -> containsTerm(normalized, term) } ||
+            containsSensitiveTerm(normalized) ||
             maskedCredentialPattern.matches(normalized) ||
             numericRunPattern.findAll(normalized).any { match ->
                 match.value.count(Char::isDigit) >= 6 &&
@@ -499,28 +513,19 @@ object UiTreeReader {
         return false
     }
 
-    private fun containsTerm(value: String, term: String): Boolean {
-        val compactTerm = compact(term)
-        if (compactTerm.matches(Regex("[a-z0-9]+"))) {
-            val separatedTerm = compactTerm.toCharArray()
-                .joinToString("[\\s\\p{M}\\p{P}\\p{S}_]*") {
-                    Regex.escape(it.toString())
-                }
-            return Regex(
-                "(?<![a-z0-9])$separatedTerm(?![a-z0-9])",
-                RegexOption.IGNORE_CASE,
-            ).containsMatchIn(value)
-        }
-        return compact(value).contains(compactTerm)
-    }
+    private fun containsSensitiveTerm(value: String): Boolean =
+        asciiSensitiveTermPatterns.any { it.containsMatchIn(value) } ||
+            compact(value).let { compactValue ->
+                literalSensitiveTerms.any(compactValue::contains)
+            }
 
     private fun compact(value: String): String = value
-        .replace(Regex("[\\p{Cf}\\p{Cc}\\p{M}\\s\\p{P}\\p{S}_]+"), "")
+        .replace(compactIgnoredPattern, "")
 
     private fun containsUnsafeShortNumericValue(value: String?): Boolean {
         if (value.isNullOrBlank()) return false
         val normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
-            .replace(Regex("[\\p{Cf}\\p{Cc}\\p{M}]"), "")
+            .replace(normalizedIgnoredPattern, "")
         return numericRunPattern.findAll(normalized).any { match ->
             match.value.count(Char::isDigit) in 4..5 &&
                 !isClearlyNonSensitiveShortNumber(normalized, match) &&

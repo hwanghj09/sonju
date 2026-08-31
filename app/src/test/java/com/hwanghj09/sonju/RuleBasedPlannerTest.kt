@@ -467,6 +467,15 @@ class RuleBasedPlannerTest {
         assertEquals("네이버 지도", directionsRoute?.appLabel)
         assertEquals("서울역", directionsRoute?.launchQuery)
         assertNull(com.hwanghj09.sonju.task.DeterministicTaskParser.parse(directions).targetApp)
+
+        val samsungGangnam = "삼성 강남 가는 길 알려줘"
+        val samsungGangnamRoute = AppWorkflowRouter.route(
+            samsungGangnam,
+            listOf("Google 지도", "카카오맵", "네이버 지도"),
+        )
+        assertEquals("네이버 지도", samsungGangnamRoute?.appLabel)
+        assertEquals("삼성 강남", samsungGangnamRoute?.launchQuery)
+        assertNull(com.hwanghj09.sonju.task.DeterministicTaskParser.parse(samsungGangnam).targetApp)
     }
 
     @Test

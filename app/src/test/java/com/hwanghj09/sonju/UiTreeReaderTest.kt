@@ -11,6 +11,37 @@ import org.junit.Test
 
 class UiTreeReaderTest {
     @Test
+    fun densePublicRouteLabelsAreClassifiedWithoutRepeatedRegexCompilation() {
+        val labels = listOf(
+            "테스트 목적지",
+            "가상시 예시구 테스트로 123",
+            "39분",
+            "오후 9:19",
+            "오후 9:58",
+            "3,200원",
+            "예시마을1단지·테스트중",
+            "350",
+            "330",
+            "375",
+            "누리4",
+            "가상역·예시빌딩",
+            "바로 안내시작",
+        )
+        val startedAt = System.nanoTime()
+        var sensitiveLabels = 0
+
+        repeat(10_000) {
+            labels.forEach {
+                if (UiTreeReader.isSensitiveText(it)) sensitiveLabels += 1
+            }
+        }
+
+        val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
+        assertEquals(0, sensitiveLabels)
+        assertTrue("route label classification took ${elapsedMillis}ms", elapsedMillis < 3_000)
+    }
+
+    @Test
     fun deliveryDurationRangeIsPublicNotAShortCredential() {
         assertFalse(UiTreeReader.isSensitiveText("44~59분 후 도착"))
         assertFalse(UiTreeReader.isSensitiveText("45 minutes"))
