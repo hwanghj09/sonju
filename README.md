@@ -2,7 +2,7 @@
 
 고령층이 말이나 글로 최종 목표를 설명하면, SonjuAI가 계획을 세우고 Android 앱을 직접 탐색하는 접근성 기반 자율 조작 프로토타입입니다. 특정 앱용 시나리오 대신 `AccessibilityService`가 제공하는 의미 노드와 범용 도구를 우선 사용하며, 각 동작 뒤 화면을 다시 관찰해 계획을 수정합니다.
 
-> **현재 개발 빌드:** 일반 탐색은 자동 실행합니다. 택시 호출·주문 확정·메시지 전송처럼 되돌리기 어려운 동작은 실행 직전에 사용자 확인을 요구합니다. 결제·송금·비밀번호·OTP·인증정보 입력과 민감 화면 좌표 탭은 자동 실행하지 않습니다. 이 빌드는 실기기·Gemini 운영 검증과 Play 정책 검토 전의 프로토타입입니다.
+> **현재 개발 빌드:** 일반 탐색은 자동 실행합니다. 택시 호출·주문 확정·메시지 전송처럼 되돌리기 어려운 동작은 실행 직전에 사용자 확인을 요구합니다. 결제·송금·비밀번호·OTP·인증정보 입력과 민감 화면 좌표 탭은 자동 실행하지 않습니다. 이 빌드는 실기기·OpenAI 운영 검증과 Play 정책 검토 전의 프로토타입입니다.
 
 ## 지금 구현된 것
 
@@ -13,7 +13,7 @@
 - 다른 앱에서 받은 명령은 손주 Activity를 열지 않고 접근성 서비스 안에서 계획·안전 검사·실행하며 필요한 확인도 하단 오버레이에 표시
 - `손주야 + 명령` 백그라운드 호출
 - `AccessibilityNodeInfo`의 text·description·hint·pane·state·focus·heading·지원 action·화면 좌표를 수집하고 민감값은 모델 입력 전에 제거
-- Gemini Interactions API `v1`, `gemini-3.1-flash-lite`, `store=false`, JSON Schema 구조화 계획
+- OpenAI Responses API `v1`, 기본 `gpt-5.6-luna`, `reasoning.effort=none`, `store=false`, strict JSON Schema 구조화 계획
 - 모든 AI 계획에 고정 `final_goal`, 실행 앱, 목표 페이지/기능, 전체 도구 집합, 전략, 관찰 가능한 완료 조건, 수정 이유를 필수 포함
 - 실제 실행은 한 번에 한 도구만 수행한 뒤 새 화면을 관찰하는 `관찰 → 계획 → 도구 → 검증 → 재계획` 루프
 - `ScreenState` semantic parser·stable fingerprint, canonical task, parameterized `AppSkill`과 모델 호출 없는 local fast path
@@ -29,7 +29,7 @@
 - 개인정보로 표시된 화면은 원본 스크린샷을 원격 모델에 보내지 않음
 - 흔한 단일 시스템 명령은 동일한 계획 계약을 채우는 로컬 규칙으로 처리해 모델 비용 절감
 - 과거의 배민 전용 결정적 경로는 호환 코드로만 남아 있고 기본 명령 파이프라인에서는 사용하지 않음
-- 앱 백업과 평문 HTTP 비활성화, Gemini Interactions 상태 저장 `store=false` 요청
+- 앱 백업과 평문 HTTP 비활성화, OpenAI Responses 상태 저장 `store=false` 요청
 - 계획 불변성·반복 실패·경로 최적화·최소 안전 정책·selector 유일성 회귀 테스트
 
 일반 앱 탐색과 비민감 정보 입력은 기본 허용입니다. 되돌리기 어려운 high-risk 동작은 직전 확인을 거치며, critical final commit과 민감 입력은 차단합니다. 잘못된 좌표, 비어 있는 입력값, 여러 편집 필드 중 대상을 확정하지 못한 경우, 관찰하지 않은 미래 화면 행동을 한 번에 묶은 계획도 실행하지 않고 새 계획을 요청합니다.
@@ -43,7 +43,8 @@ flowchart LR
     A --> M["필수 형식 전체 계획<br/>다음 도구 1개"]
     M --> G{"최소 안전 경계"}
     G -->|일반 조작| E["live 화면 재검증 후 실행"]
-    G -->|결제·개인정보| C["사용자 확인"]
+    G -->|되돌리기 어려운 동작| C["사용자 확인"]
+    G -->|결제·인증정보| B["실행 차단"]
     C --> E
     E --> O["화면 변화·실패 관찰"]
     O --> D{"완료 조건 충족?"}
@@ -66,8 +67,11 @@ $env:Path="$env:JAVA_HOME\bin;$env:Path"
 API 키는 Git에서 제외된 `local.properties`에 둡니다.
 
 ```properties
-GEMINI_API_KEY=YOUR_LOCAL_PROTOTYPE_KEY
+OPENAI_API_KEY=YOUR_LOCAL_PROTOTYPE_KEY
+OPENAI_MODEL=gpt-5.6-luna
 ```
+
+`OPENAI_MODEL`은 선택 항목이며 기본값은 이미지 입력과 [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)를 지원하는 [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna)입니다. 기존 저지연 기준을 유지하도록 요청에는 `reasoning.effort=none`을 명시합니다. 실제 키가 없는 상태에서도 단위 테스트와 빌드는 가능하지만 OpenAI 실 API 경로가 검증되었다는 뜻은 아닙니다. 실제 키나 키가 든 `local.properties`는 커밋하지 마십시오.
 
 1. APK를 설치하고 손주를 엽니다.
 2. 개인정보 고지를 읽고 `동의하고 연결하기`를 누릅니다.
@@ -113,9 +117,7 @@ GEMINI_API_KEY=YOUR_LOCAL_PROTOTYPE_KEY
 .\scripts\adb-debug-install.ps1
 ```
 
-## ‘Google Framer’와 실제 구현 차이
-
-Google의 공식 모바일 UI 기술 중 `Google Framer`라는 공개 API는 확인되지 않습니다. 화면을 보고 조작하는 에이전트를 뜻했다면 가장 가까운 공식 기능은 [Gemini Computer Use](https://ai.google.dev/gemini-api/docs/computer-use)이며, 화면 구조를 앱 렌더링 단계에서 가로채는 공개 Android API는 아닙니다.
+## Android 접근성 구현 경계
 
 이 프로토타입은 Android가 공식 제공하는 [AccessibilityService](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService)의 의미 트리를 사용합니다. 따라서 매 프레임 VLM을 호출하는 방식보다 빠르고 저렴하지만 다음 화면은 완전히 파악하거나 조작할 수 없습니다.
 
@@ -133,7 +135,7 @@ Google의 공식 모바일 UI 기술 중 `Google Framer`라는 공개 API는 확
 
 ## 프로토타입과 출시 버전의 경계
 
-현재 Gemini 키는 로컬 프로토타입을 빠르게 검증하기 위해 **debug APK의** `BuildConfig`로 들어가므로 APK에서 추출될 수 있습니다. release 빌드에는 빈 값만 들어가지만, 외부 배포 전에는 현재 키를 교체하고 클라이언트 직접 호출 자체를 제거해야 합니다. 출시 구조는 [Firebase AI Logic + App Check](https://firebase.google.com/docs/ai-logic/get-started?platform=android) 또는 서버 프록시에서 Gemini를 호출하는 방식이 필요합니다. Google도 [모바일 앱에 Gemini API 키를 직접 넣지 않도록 안내](https://ai.google.dev/gemini-api/docs/api-key)합니다.
+현재 OpenAI 키는 로컬 프로토타입을 빠르게 검증하기 위해 **debug APK의** `BuildConfig`로 들어갈 수 있으므로 APK에서 추출될 수 있습니다. release 빌드에는 빈 값만 들어가지만, 외부 배포 전에는 현재 키를 교체하고 모바일 클라이언트 직접 호출 자체를 제거해야 합니다. 출시 구조는 서버 프록시나 보호된 모바일 AI 게이트웨이에서 OpenAI를 호출하고 앱에는 단기 사용자 세션만 제공해야 합니다.
 
 Google Play는 일반 앱이 Accessibility API로 자율적으로 작업을 시작·계획·실행하는 것을 금지하고, 좁고 사람이 정의한 결정적 자동화만 별도로 허용합니다. 검증된 장애인용 접근성 도구는 핵심 목적 범위에서 예외가 있을 수 있지만 선언과 심사가 필요합니다. 이 프로토타입은 `isAccessibilityTool=false`, 별도 고지·동의, 사용자 시작, AI 계획 승인, 위험 작업 차단으로 구성했지만 **현재 AI 계획→접근성 실행 빌드는 그대로 Google Play에 배포할 수 없습니다.** Play 제출판은 AI를 안내 전용으로 제한해 실행을 사람이 정의한 결정적 규칙으로 좁히거나, 실제 장애 지원 핵심 목적과 기능을 입증해 별도 심사를 받아야 합니다. 자세한 기준은 [AccessibilityService 정책](https://support.google.com/googleplay/android-developer/answer/10964491)을 따르십시오.
 

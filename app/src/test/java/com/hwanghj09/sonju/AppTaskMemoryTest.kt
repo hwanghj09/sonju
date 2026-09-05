@@ -89,6 +89,6 @@ class AppTaskMemoryTest {
             AgentAction(type = type, description = "테스트"),
             AgentAction(type = ActionType.FINISH, description = "끝"),
         ),
-        source = PlanSource.GEMINI_STRUCTURE,
+        source = PlanSource.OPENAI_STRUCTURE,
     )
 }

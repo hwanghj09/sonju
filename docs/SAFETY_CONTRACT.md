@@ -51,7 +51,7 @@
 - 비밀번호, PIN, OTP, 카드·주민 정보와 분할 credential 슬롯은 접근성 스냅샷에서 redaction합니다.
 - 민감 노드는 모델 compact tree에서 text, description, hint, path, view ID, bounds를 제공하지 않습니다.
 - 민감 노드가 하나라도 존재하는 화면은 원본 스크린샷을 원격 모델에 보내지 않습니다.
-- Gemini Interactions 요청은 `store=false`를 사용합니다. 이는 모바일 클라이언트 API 키 문제나 제공자 측 전체 데이터 보존 조건을 해결하지 않습니다.
+- OpenAI Responses 요청은 `store=false`를 사용합니다. 이는 모바일 클라이언트 API 키 문제나 제공자 측 전체 데이터 보존 조건을 해결하지 않습니다.
 - 학습 경로에는 입력값, 원본 명령, 화면 본문, 스크린샷을 저장하지 않습니다.
 
 ## 좌표 gesture
@@ -72,4 +72,4 @@
 
 ## 출시 경계
 
-현재 debug 빌드는 Gemini 키를 `BuildConfig`에 포함할 수 있으므로 공개 배포용이 아닙니다. 공개 배포 전 서버 프록시 또는 보호된 모바일 AI 게이트웨이로 키를 이전해야 합니다. 범용 AI 계획이 AccessibilityService를 통해 앱을 조작하는 구조는 Google Play Accessibility 정책 검토와 핵심 접근성 목적 입증 없이 그대로 제출할 수 없습니다.
+현재 debug 빌드는 OpenAI 키를 `BuildConfig`에 포함할 수 있으므로 공개 배포용이 아닙니다. 공개 배포 전 서버 프록시 또는 보호된 모바일 AI 게이트웨이로 키를 이전해야 합니다. 범용 AI 계획이 AccessibilityService를 통해 앱을 조작하는 구조는 Google Play Accessibility 정책 검토와 핵심 접근성 목적 입증 없이 그대로 제출할 수 없습니다.

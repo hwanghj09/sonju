@@ -7,7 +7,7 @@
 | Perception | `perception/AccessibilityScreenParser` | `UiSnapshot`을 정규화·pruning하고 semantic role, screen type, quality, 안정 fingerprint를 생성 |
 | Task | `task/DeterministicTaskParser`, `DeterministicTaskCanonicalizer` | 요청을 parameter, constraint, risk가 있는 `CanonicalTask`로 변환하고 bounded cache 사용 |
 | Skill | `skill/SkillRetriever`, `FastPathPlanner`, `SkillLearner` | 화면과 task가 정확히 맞는 local skill 재사용 및 성공 trace 일반화 |
-| Planning | `planner/Plan`, `GeminiPlanner` | semantic action 후보 생성. unknown task는 JSON Schema structured output 사용 |
+| Planning | `planner/Plan`, `OpenAiPlanner` | semantic action 후보 생성. unknown task는 OpenAI Responses strict JSON Schema structured output 사용 |
 | Grounding | `grounding/DeterministicSemanticGrounder` | selector, text, id, role, state를 점수화하고 유일한 node 또는 clickable ancestor를 반환 |
 | Verification | `verifier/DeterministicActionVerifier` | 현재 화면, risk, 민감성, 좌표 출처, node 유일성, 사용자 확인을 검사하고 `VerifiedPlan` 발급 |
 | Execution | `SonjuAccessibilityService` | 검증된 node action을 우선 실행하고 제한된 gesture 폴백 뒤 event 기반 postcondition 확인 |
@@ -18,7 +18,7 @@
 
 `VerifiedAction`과 `VerifiedPlan`의 생성자는 module 내부에서만 접근할 수 있다. `MainActivity`와 접근성 오버레이는 raw plan을 verifier에 전달하고, executor에는 허용 결과만 넘긴다. 서비스는 실행 직전 source epoch와 raw/semantic fingerprint를 다시 비교하며, 각 step은 verifier가 고정한 node id만 사용한다.
 
-화면이 변하거나 grounding이 모호하면 실행하지 않고 재계획한다. node click이 실패했을 때도 동일한 검증 node의 bounds에만 gesture를 보낼 수 있다. VLM 좌표는 `visualFallback=true`와 `GEMINI_SEMANTIC_MAP` 출처가 함께 있어야 한다.
+화면이 변하거나 grounding이 모호하면 실행하지 않고 재계획한다. node click이 실패했을 때도 동일한 검증 node의 bounds에만 gesture를 보낼 수 있다. VLM 좌표는 `visualFallback=true`와 `OPENAI_SEMANTIC_MAP` 출처가 함께 있어야 한다.
 
 ## 관찰과 종료
 

@@ -1,6 +1,6 @@
 # SonjuAI 남은 검증·출시 과제
 
-이 문서는 `codex/autonomous-ui-agent-v2`의 현재 소스 기준 인수인계입니다. JVM 테스트와 빌드 성공은 Android 실기기, OEM 접근성 구현, 실제 Gemini 응답, Google Play 승인까지 보증하지 않습니다.
+이 문서는 `codex/autonomous-ui-agent-v2` 기반 현재 소스의 인수인계입니다. JVM 테스트와 빌드 성공은 Android 실기기, OEM 접근성 구현, 실제 OpenAI 응답, Google Play 승인까지 보증하지 않습니다.
 
 ## 현재 구현 상태
 
@@ -16,19 +16,19 @@
 ### 2026-08-24 로컬 검증 스냅샷
 
 - 임시 ASCII `R:` 경로에서 `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 성공
-- JVM 테스트 130개, failure 0, error 0, skipped 0
-- Android lint error 0, warning 75. 경고는 주로 기존 unused resource, 아이콘/레이아웃 스타일 항목이며 출시 전 별도 정리가 필요합니다.
-- debug APK: `app/build/outputs/apk/debug/app-debug.apk`, 149,602,082 bytes, SHA-256 `84722A3834F7380A6CF8D743A73E6653759CFFC08E56A0A068A9B4B37598CA5C`
-- 실제 Gemini API 요청, emulator/instrumentation, 실기기 gesture·IME는 이 스냅샷에서 실행하지 않았습니다.
+- JVM 테스트 192개, failure 0, error 0, skipped 0
+- Android lint error 0, warning 76. 경고는 주로 기존 unused resource, 아이콘/레이아웃 스타일 항목이며 출시 전 별도 정리가 필요합니다.
+- debug APK: `app/build/outputs/apk/debug/app-debug.apk`, 90,658,197 bytes, SHA-256 `F5126498BD254C168498EFBB999EB00CCC9EA6E77E827EDEC09E0CDA9CDE8413`
+- 실제 OpenAI API 요청, emulator/instrumentation, 실기기 gesture·IME는 이 스냅샷에서 실행하지 않았습니다.
 
 ## P0 — 실기기에서 반드시 검증할 항목
 
-### 1. 실제 Gemini 계획 계약
+### 1. 실제 OpenAI 계획 계약
 
 민감 정보가 없는 테스트 앱에서 로컬 규칙에 없는 명령을 실행해 다음을 확인합니다.
 
 - 응답이 `final_goal`, `target_app`, `target_surface`, `required_tools`, `strategy`, `success_criteria`, `revision_reason`과 action 좌표 필드를 모두 반환하는지
-- Interactions API가 현재 JSON Schema의 nullable number와 최대 2개 action을 받아들이는지
+- Responses API가 현재 strict JSON Schema의 nullable number와 최대 2개 action을 받아들이는지
 - 앱 화면 변화 후 final goal은 그대로이고 수정 가능한 필드와 revision reason만 바뀌는지
 - 네트워크 timeout, HTTP 4xx/5xx, 잘못된 JSON에서 사용자 중단과 재시도가 정상 동작하는지
 - logcat, crash report, 파일에 명령·화면 본문·API 키가 출력되지 않는지
@@ -51,7 +51,7 @@ Android 11 이상 비민감 Canvas/WebView 테스트 화면에서 다음을 검�
 - 시각 분석 결과가 직접 탭되지 않고 `CLICK_COORDINATE` 계획과 live revision 검사를 거치는지
 - status/navigation bar, display cutout, 회전, multi-window에서 0~1 좌표 변환이 맞는지
 - gesture가 취소되거나 같은 좌표가 두 번 실패하면 다시 누르지 않는지
-- password/OTP/card node가 하나라도 있는 화면에서는 `takeScreenshot` 결과가 Gemini 요청으로 전달되지 않는지
+- password/OTP/card node가 하나라도 있는 화면에서는 `takeScreenshot` 결과가 OpenAI 요청으로 전달되지 않는지
 - `FLAG_SECURE`, 캡처 실패, Android 10 이하에서 접근성 경로로 되돌아가거나 명확히 실패하는지
 
 ### 4. 텍스트 입력과 IME
@@ -85,7 +85,7 @@ Android 11 이상 비민감 Canvas/WebView 테스트 화면에서 다음을 검�
 - 시스템 글자/디스플레이 크기 최댓값, 다크 모드, 회전, split screen
 - TalkBack 동시 사용, 다른 overlay, 키보드가 열린 상태의 좌표와 스크롤
 - 2,000-node/24-depth truncated tree에서 모델 token 크기와 누락 대상 처리
-- 긴 세션의 배터리, 메모리, snapshot executor backlog, Gemini 호출 수와 latency
+- 긴 세션의 배터리, 메모리, snapshot executor backlog, OpenAI 호출 수와 latency
 - Vosk wake word foreground service와 자율 실행이 동시에 동작할 때 마이크·TTS·overlay 수명
 - 앱 강제 종료, 서비스 재연결, 기기 재부팅 후 진행 중 세션과 route memory 일관성
 
@@ -109,7 +109,7 @@ try {
 
 ### API 키와 데이터 처리
 
-- debug APK의 `BuildConfig.GEMINI_API_KEY`는 추출 가능합니다. 현재 키를 외부 배포 전에 교체하십시오.
+- debug APK의 `BuildConfig.OPENAI_API_KEY`는 추출 가능합니다. 현재 키를 외부 배포 전에 교체하십시오.
 - release build는 키를 비워 두지만, 실제 출시 구조는 서버 프록시 또는 보호된 모바일 AI 게이트웨이와 abuse/rate limiting이 필요합니다.
 - `store=false`는 전체 Zero Data Retention 보장이 아닙니다. 실제 제공자 계약과 개인정보 고지를 별도로 검토해야 합니다.
 
@@ -130,7 +130,7 @@ try {
 다음 단계 완료를 주장하려면 최소한 아래 증거가 필요합니다.
 
 1. JVM 전체 회귀 테스트, lint, debug assemble 성공
-2. 실제 Gemini 구조 계획 성공·오류 경로 캡처
+2. 실제 OpenAI 구조 계획 성공·오류 경로 캡처
 3. 서로 다른 세 앱의 자율 탐색·입력·완료 화면 검증
 4. 민감 screenshot 차단과 결제/개인정보 확인 instrumentation 검증
 5. 최단 경로 저장·회상·더 짧은 경로 교체의 기기 내 저장소 검증

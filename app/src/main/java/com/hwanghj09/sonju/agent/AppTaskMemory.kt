@@ -44,13 +44,13 @@ class AppTaskMemory(context: Context) {
                 modelRisk = RiskLevel.valueOf(json.getString("risk")),
                 confidence = 1.0,
                 actions = actions,
-                source = PlanSource.GEMINI_STRUCTURE,
+                source = PlanSource.OPENAI_STRUCTURE,
             ).takeIf { AppTaskMemoryPolicy.isReusable(snapshot, it) }
         }.getOrNull()
     }
 
     fun remember(command: String, snapshot: UiSnapshot, plan: AgentPlan) {
-        if (plan.source != PlanSource.GEMINI_STRUCTURE ||
+        if (plan.source != PlanSource.OPENAI_STRUCTURE ||
             !AppTaskMemoryPolicy.isReusable(snapshot, plan)
         ) return
         val actions = JSONArray().apply {

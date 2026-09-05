@@ -68,7 +68,7 @@ import com.hwanghj09.sonju.agent.UiElement
 import com.hwanghj09.sonju.agent.UiNodeAction
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.agent.UserFeedbackMemory
-import com.hwanghj09.sonju.ai.GeminiPlanner
+import com.hwanghj09.sonju.ai.OpenAiPlanner
 import com.hwanghj09.sonju.ai.VisualScreenResult
 import com.hwanghj09.sonju.execution.ExecutionFailureReason
 import com.hwanghj09.sonju.execution.ExecutionMethod
@@ -152,7 +152,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
     private val epoch = AtomicLong(SystemClock.elapsedRealtime())
     private val overlaySession = AtomicLong(0L)
-    private val overlayGeminiPlanner = GeminiPlanner()
+    private val overlayOpenAiPlanner = OpenAiPlanner()
     private val architectureRuntime by lazy { SonjuAgentRuntime.get(this) }
     private val learnedRouteMemory by lazy { LearnedRouteMemory(this) }
     private val userFeedbackMemory by lazy { UserFeedbackMemory(this) }
@@ -764,7 +764,7 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun dismissVoicePanelFromOutside(cancelBaemin: Boolean) {
         overlayCommandGeneration += 1
-        overlayGeminiPlanner.cancelPending()
+        overlayOpenAiPlanner.cancelPending()
         autonomySession = null
         invalidateOverlayCapture()
         clearProactiveSearch()
@@ -818,7 +818,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         val generation = ++overlayCommandGeneration
         activeFeedbackCommand = command
         activeFeedbackApproach = ""
-        overlayGeminiPlanner.cancelPending()
+        overlayOpenAiPlanner.cancelPending()
         showVoicePanelWorking("현재 화면에서 안전한 실행 방법을 확인하고 있어요…")
 
         val explanationRequest = ScreenExplainer.isExplanationRequest(command)
@@ -850,7 +850,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             val browserUrl = ScreenExplainer.detectBrowserUrl(snapshot)
             val fallback = ScreenExplainer.explain(command, appLabel, snapshot, browserUrl)
             if (ScreenExplainer.needsScreenshotFallback(command, snapshot) &&
-                overlayGeminiPlanner.isConfigured && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                overlayOpenAiPlanner.isConfigured && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
                 EssentialSafetyPolicy.allowsRemoteScreenshot(snapshot)
             ) {
                 voicePanelTranscript?.text = "접근성 정보에서 찾지 못해 화면을 보고 확인하고 있어요…"
@@ -860,7 +860,7 @@ class SonjuAccessibilityService : AccessibilityService() {
                         deliverScreenExplanation(fallback)
                         return@captureScreenshotAsync
                     }
-                    overlayGeminiPlanner.analyzeScreenshotAsync(
+                    overlayOpenAiPlanner.analyzeScreenshotAsync(
                         command = command,
                         screenshotJpegBase64 = frame.jpegBase64,
                         question = true,
@@ -876,9 +876,9 @@ class SonjuAccessibilityService : AccessibilityService() {
                 return
             }
             val semanticMap = context?.semanticMapJpegBase64?.takeIf(String::isNotBlank)
-            if (semanticMap != null && overlayGeminiPlanner.isConfigured) {
+            if (semanticMap != null && overlayOpenAiPlanner.isConfigured) {
                 voicePanelTranscript?.text = "민감 정보를 뺀 화면 구조로 사용법을 설명하고 있어요…"
-                overlayGeminiPlanner.explainScreenAsync(
+                overlayOpenAiPlanner.explainScreenAsync(
                     command,
                     snapshot,
                     semanticMap,
@@ -976,7 +976,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         ) {
             return
         }
-        if (!overlayGeminiPlanner.isConfigured) {
+        if (!overlayOpenAiPlanner.isConfigured) {
             finishAutonomyAttempt()
             showOverlayMessage(getString(R.string.api_missing))
             return
@@ -988,7 +988,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             targetApp = session.latestPlan?.targetApp,
         )
 
-        overlayGeminiPlanner.planAsync(
+        overlayOpenAiPlanner.planAsync(
             command = command,
             snapshot = snapshot,
             semanticMapJpegBase64 = context?.semanticMapJpegBase64,
@@ -1139,11 +1139,11 @@ class SonjuAccessibilityService : AccessibilityService() {
             groundingFailed = true,
         )
         if (alreadyAttempted || Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
-            !overlayGeminiPlanner.isConfigured || !screenshotAllowed || !policyAllowed
+            !overlayOpenAiPlanner.isConfigured || !screenshotAllowed || !policyAllowed
         ) {
             debugTrace(
                 "visual fallback skipped attempted=$alreadyAttempted sdk=${Build.VERSION.SDK_INT} " +
-                    "configured=${overlayGeminiPlanner.isConfigured} " +
+                    "configured=${overlayOpenAiPlanner.isConfigured} " +
                     "screenshotAllowed=$screenshotAllowed policyAllowed=$policyAllowed " +
                     "sensitive=${snapshot.elements.count { it.visible && it.sensitive }}",
             )
@@ -1159,7 +1159,7 @@ class SonjuAccessibilityService : AccessibilityService() {
                 deliverScreenExplanation("화면 캡처를 가져오지 못해 요청한 항목을 찾지 못했어요.")
                 return@captureScreenshotAsync
             }
-            overlayGeminiPlanner.analyzeScreenshotAsync(
+            overlayOpenAiPlanner.analyzeScreenshotAsync(
                 command = command,
                 screenshotJpegBase64 = frame.jpegBase64,
                 question = false,
@@ -1174,10 +1174,10 @@ class SonjuAccessibilityService : AccessibilityService() {
                                 "${failure::class.java.simpleName}:${failure.message.orEmpty().take(80)}"
                             }.orEmpty()}",
                     )
-                    if (result.exceptionOrNull()?.message == "Gemini API key is invalid") {
+                    if (result.exceptionOrNull()?.message == "OpenAI API key is invalid") {
                         finishAutonomyAttempt()
                         deliverScreenExplanation(
-                            "Gemini API 키가 유효하지 않아 화면 전용 요소를 분석하지 못했어요. " +
+                            "OpenAI API 키가 유효하지 않아 화면 전용 요소를 분석하지 못했어요. " +
                                 "유효한 키를 설정한 뒤 다시 시도해 주세요.",
                         )
                         return@post
@@ -1217,7 +1217,7 @@ class SonjuAccessibilityService : AccessibilityService() {
                                 coordinateAction,
                                 AgentAction(ActionType.FINISH, "변경된 화면을 다시 관찰합니다."),
                             ),
-                            source = PlanSource.GEMINI_SEMANTIC_MAP,
+                            source = PlanSource.OPENAI_SEMANTIC_MAP,
                             continueAfterAction = true,
                             targetApp = snapshot.packageName,
                             targetSurface = target.explanation,
@@ -1517,7 +1517,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         val snapshot = activeFeedbackSnapshot ?: UiSnapshot.empty()
         val approach = activeFeedbackApproach
         overlayCommandGeneration += 1
-        overlayGeminiPlanner.cancelPending()
+        overlayOpenAiPlanner.cancelPending()
         autonomySession = null
         stopCurrentExecution()
         mainHandler.post {
@@ -1601,8 +1601,8 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun shouldVerifyGoalAfterAction(plan: AgentPlan): Boolean {
         if (plan.source !in setOf(
-                PlanSource.GEMINI_STRUCTURE,
-                PlanSource.GEMINI_SEMANTIC_MAP,
+                PlanSource.OPENAI_STRUCTURE,
+                PlanSource.OPENAI_SEMANTIC_MAP,
             )
         ) return false
         val action = plan.actions.singleOrNull { it.type != ActionType.FINISH } ?: return false
@@ -1875,7 +1875,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         stopCurrentExecution()
         overlayCommandGeneration += 1
-        overlayGeminiPlanner.close()
+        overlayOpenAiPlanner.close()
         textToSpeech?.stop()
         textToSpeech?.shutdown()
         textToSpeech = null

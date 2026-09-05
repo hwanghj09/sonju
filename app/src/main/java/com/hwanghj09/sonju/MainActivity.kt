@@ -53,7 +53,7 @@ import com.hwanghj09.sonju.agent.ScreenExplainer
 import com.hwanghj09.sonju.agent.SonjuAgentRuntime
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.agent.displayName
-import com.hwanghj09.sonju.ai.GeminiPlanner
+import com.hwanghj09.sonju.ai.OpenAiPlanner
 import com.hwanghj09.sonju.shopping.BaeminOrderLocalPlanner
 import com.hwanghj09.sonju.voice.WakeWordService
 import com.hwanghj09.sonju.verifier.VerificationResult
@@ -80,7 +80,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var resultText: TextView
     private var competingControls: List<View> = emptyList()
 
-    private val geminiPlanner = GeminiPlanner()
+    private val openAiPlanner = OpenAiPlanner()
     private val architectureRuntime by lazy { SonjuAgentRuntime.get(this) }
     private lateinit var learnedRouteMemory: LearnedRouteMemory
     private var autonomySession: AutonomySession? = null
@@ -212,7 +212,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onStop() {
         if (fromOverlay && !awaitingVoiceRecognition) {
             requestGeneration += 1
-            geminiPlanner.cancelPending()
+            openAiPlanner.cancelPending()
             setBusy(false, keepProgress = false)
             clearOverlayContext()
         }
@@ -223,7 +223,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         requestGeneration += 1
         awaitingVoiceRecognition = false
         clearOverlayContext()
-        geminiPlanner.close()
+        openAiPlanner.close()
         textToSpeech?.stop()
         textToSpeech?.shutdown()
         textToSpeech = null
@@ -341,7 +341,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (!requestedFromOverlay) {
             if (busy || confirmationDialog != null) {
                 requestGeneration += 1
-                geminiPlanner.cancelPending()
+                openAiPlanner.cancelPending()
                 SonjuAccessibilityService.instance?.stopCurrentExecution()
                 autonomySession = null
                 setBusy(false, keepProgress = false)
@@ -355,7 +355,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         if (fromOverlay || busy || confirmationDialog != null) {
             requestGeneration += 1
-            geminiPlanner.cancelPending()
+            openAiPlanner.cancelPending()
             setBusy(false, keepProgress = false)
         }
         clearOverlayContext()
@@ -728,7 +728,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        if (!geminiPlanner.isConfigured) {
+        if (!openAiPlanner.isConfigured) {
             finishBusyWithMessage(getString(R.string.api_missing), success = false)
             return
         }
@@ -736,14 +736,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         showProgress(getString(R.string.progress_plan))
         if (preRenderedSemanticMap != null) {
             progressDetail.text = "민감 정보를 뺀 버튼 배치도를 한 번 더 확인하고 있어요"
-            requestGeminiPlan(
+            requestOpenAiPlan(
                 command,
                 snapshot,
                 preRenderedSemanticMap,
                 generation,
             )
         } else {
-            requestGeminiPlan(
+            requestOpenAiPlan(
                 command,
                 snapshot,
                 semanticMap = null,
@@ -752,7 +752,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun requestGeminiPlan(
+    private fun requestOpenAiPlan(
         command: String,
         snapshot: UiSnapshot,
         semanticMap: String?,
@@ -764,7 +764,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             snapshot = snapshot,
             targetApp = session?.latestPlan?.targetApp,
         )
-        geminiPlanner.planAsync(
+        openAiPlanner.planAsync(
             command = command,
             snapshot = snapshot,
             semanticMapJpegBase64 = semanticMap,
@@ -1001,8 +1001,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             architectureRuntime.recordExecution(command, verifiedPlan, result)
             val adaptivePlan = plan.continueAfterAction || plan.source in setOf(
                 PlanSource.SKILL_FAST_PATH,
-                PlanSource.GEMINI_STRUCTURE,
-                PlanSource.GEMINI_SEMANTIC_MAP,
+                PlanSource.OPENAI_STRUCTURE,
+                PlanSource.OPENAI_SEMANTIC_MAP,
             )
             val continuing = result.success && adaptivePlan &&
                 executionSession?.canContinue(SystemClock.elapsedRealtime()) == true
@@ -1098,7 +1098,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun stopCurrentWork() {
         requestGeneration += 1
-        geminiPlanner.cancelPending()
+        openAiPlanner.cancelPending()
         SonjuAccessibilityService.instance?.stopCurrentExecution()
         clearOverlayContext()
         finishBusyWithMessage(getString(R.string.stopped_message), success = false)
@@ -1173,7 +1173,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         contextExpiryRunnable = Runnable {
             if (fromOverlay && externalContextSessionId == sessionId) {
                 requestGeneration += 1
-                geminiPlanner.cancelPending()
+                openAiPlanner.cancelPending()
                 val message = getString(R.string.overlay_context_expired)
                 finishBusyWithMessage(message, success = false)
                 speak(message)

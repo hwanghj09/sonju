@@ -8,7 +8,7 @@ SonjuAI는 특정 앱의 고정 화면 순서를 재생하지 않습니다. 사�
 
 ## 필수 계획 계약
 
-`GeminiPlanner`의 JSON Schema는 매 응답에서 다음 항목을 요구합니다.
+`OpenAiPlanner`의 strict JSON Schema는 매 응답에서 다음 항목을 요구합니다.
 
 ```json
 {

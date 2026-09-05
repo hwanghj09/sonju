@@ -40,7 +40,7 @@ class RuleBasedPlannerTest {
     }
 
     @Test
-    fun unknownRequest_isDelegatedToGemini() {
+    fun unknownRequest_isDelegatedToOpenAi() {
         assertNull(RuleBasedPlanner.plan("화면에서 배송 조회 버튼을 찾아 줘"))
     }
 
@@ -1260,7 +1260,7 @@ class RuleBasedPlannerTest {
     }
 
     @Test
-    fun trustedWifiToggleUsesExactVisibleLabelWithoutCallingGemini() {
+    fun trustedWifiToggleUsesExactVisibleLabelWithoutCallingOpenAi() {
         val label = UiElement(
             path = "0.1.0.0",
             viewId = "android:id/title",

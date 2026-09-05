@@ -22,7 +22,7 @@ AccessibilityService
   -> UiSnapshot
   -> AccessibilityScreenParser / ScreenState
   -> CanonicalTask + SkillRetriever
-  -> FastPathPlanner 또는 structured Gemini planner
+  -> FastPathPlanner 또는 structured OpenAI planner
   -> SemanticGrounder
   -> DeterministicActionVerifier
   -> VerifiedPlan

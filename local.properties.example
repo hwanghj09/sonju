@@ -1,0 +1,3 @@
+# Copy these placeholders into the gitignored local.properties used by Android Studio.
+OPENAI_API_KEY=YOUR_LOCAL_PROTOTYPE_KEY
+OPENAI_MODEL=gpt-5.6-luna

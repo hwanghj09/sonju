@@ -102,7 +102,7 @@ class AutonomySessionTest {
         modelRisk = RiskLevel.LOW,
         confidence = 1.0,
         actions = actions,
-        source = PlanSource.GEMINI_STRUCTURE,
+        source = PlanSource.OPENAI_STRUCTURE,
     )
 
     private fun snapshot(text: String) = UiSnapshot(

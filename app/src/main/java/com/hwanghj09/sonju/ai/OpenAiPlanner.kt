@@ -22,8 +22,10 @@ data class VisualScreenResult(
     val yRatio: Double?,
 )
 
-class GeminiPlanner(
+class OpenAiPlanner(
     private val executor: ExecutorService = Executors.newSingleThreadExecutor(),
+    private val apiKey: String = BuildConfig.OPENAI_API_KEY,
+    private val model: String = BuildConfig.OPENAI_MODEL,
 ) : AutoCloseable, ExploratoryPlanClient, VisualGroundingClient, ScreenExplanationClient {
     private val requestGeneration = AtomicLong(0L)
     private val connectionLock = Any()
@@ -31,7 +33,7 @@ class GeminiPlanner(
     @Volatile
     private var activeConnection: HttpURLConnection? = null
 
-    override val isConfigured: Boolean get() = BuildConfig.GEMINI_API_KEY.isNotBlank()
+    override val isConfigured: Boolean get() = apiKey.isNotBlank()
 
     override fun planAsync(
         command: String,
@@ -108,7 +110,7 @@ class GeminiPlanner(
         question: Boolean,
         requestId: Long,
     ): VisualScreenResult {
-        if (!isConfigured) throw GeminiPlannerException("Gemini API key is not configured")
+        if (!isConfigured) throw OpenAiPlannerException("OpenAI API key is not configured")
         val modeInstruction = if (question) {
             "질문에 맞춰 현재 화면에서 사용자가 직접 해야 할 일을 쉬운 한국어로 설명한다."
         } else {
@@ -123,12 +125,11 @@ class GeminiPlanner(
             2~5문장으로 적는다. 사용자 요청: ${command.take(1_000)}
         """.trimIndent()
         val content = JSONArray()
-            .put(JSONObject().put("type", "text").put("text", prompt))
+            .put(JSONObject().put("type", "input_text").put("text", prompt))
             .put(
                 JSONObject()
-                    .put("type", "image")
-                    .put("data", screenshotJpegBase64)
-                    .put("mime_type", "image/jpeg"),
+                    .put("type", "input_image")
+                    .put("image_url", jpegDataUrl(screenshotJpegBase64)),
             )
         val nullableNumber = JSONObject()
             .put("type", JSONArray(listOf("number", "null")))
@@ -150,21 +151,16 @@ class GeminiPlanner(
             )
             .put("additionalProperties", false)
         val request = JSONObject()
-            .put("model", BuildConfig.GEMINI_MODEL)
+            .put("model", model)
+            .put("reasoning", JSONObject().put("effort", "none"))
             .put(
                 "input",
                 JSONArray().put(
-                    JSONObject().put("type", "user_input").put("content", content),
+                    JSONObject().put("role", "user").put("content", content),
                 ),
             )
             .put("store", false)
-            .put(
-                "response_format",
-                JSONObject()
-                    .put("type", "text")
-                    .put("mime_type", "application/json")
-                    .put("schema", schema),
-            )
+            .put("text", responseTextConfig("visual_screen_result", schema))
         val json = executeJsonRequest(request, requestId)
         val found = json.optBoolean("found", false)
         val x = json.optDouble("x_ratio").takeIf { found && it.isFinite() && it in 0.0..1.0 }
@@ -179,18 +175,18 @@ class GeminiPlanner(
     }
 
     private fun executeJsonRequest(request: JSONObject, requestId: Long): JSONObject {
-        val connection = (URL(INTERACTIONS_ENDPOINT).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(RESPONSES_ENDPOINT).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 8_000
             readTimeout = 15_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("x-goog-api-key", BuildConfig.GEMINI_API_KEY)
+            setRequestProperty("Authorization", "Bearer $apiKey")
         }
         synchronized(connectionLock) {
             if (requestId != requestGeneration.get()) {
                 connection.disconnect()
-                throw GeminiPlannerException("Gemini request was cancelled")
+                throw OpenAiPlannerException("OpenAI request was cancelled")
             }
             activeConnection = connection
         }
@@ -198,27 +194,10 @@ class GeminiPlanner(
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(request.toString()) }
             val status = connection.responseCode
             if (status !in 200..299) {
-                throw GeminiPlannerException(connection.failureMessage(status))
+                throw OpenAiPlannerException(connection.failureMessage(status))
             }
             val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val steps = JSONObject(response).optJSONArray("steps")
-                ?: throw GeminiPlannerException("Gemini response had no steps")
-            for (stepIndex in 0 until steps.length()) {
-                val step = steps.optJSONObject(stepIndex) ?: continue
-                if (step.optString("type") != "model_output") continue
-                val parts = step.optJSONArray("content") ?: continue
-                for (partIndex in 0 until parts.length()) {
-                    val part = parts.optJSONObject(partIndex) ?: continue
-                    if (part.optString("type") != "text") continue
-                    val text = part.optString("text").trim()
-                        .removePrefix("```json")
-                        .removePrefix("```")
-                        .removeSuffix("```")
-                        .trim()
-                    return JSONObject(text)
-                }
-            }
-            throw GeminiPlannerException("Gemini response had no text output")
+            return parseStructuredJson(response)
         } finally {
             connection.disconnect()
             synchronized(connectionLock) {
@@ -234,7 +213,7 @@ class GeminiPlanner(
         browserUrl: String?,
         requestId: Long,
     ): String {
-        if (!isConfigured) throw GeminiPlannerException("Gemini API key is not configured")
+        if (!isConfigured) throw OpenAiPlannerException("OpenAI API key is not configured")
         val prompt = """
             당신은 고령층에게 현재 Android 앱 화면의 사용법을 설명하는 도우미다.
             첨부 이미지는 원본 화면이 아니라 민감값을 제거한 접근성 의미 노드 배치도다.
@@ -256,12 +235,11 @@ class GeminiPlanner(
             ${snapshot.compactText(50)}
         """.trimIndent()
         val content = JSONArray()
-            .put(JSONObject().put("type", "text").put("text", prompt))
+            .put(JSONObject().put("type", "input_text").put("text", prompt))
             .put(
                 JSONObject()
-                    .put("type", "image")
-                    .put("data", semanticMapJpegBase64)
-                    .put("mime_type", "image/jpeg"),
+                    .put("type", "input_image")
+                    .put("image_url", jpegDataUrl(semanticMapJpegBase64)),
             )
         val explanationSchema = JSONObject()
             .put("type", "object")
@@ -272,70 +250,20 @@ class GeminiPlanner(
             .put("required", JSONArray(listOf("explanation")))
             .put("additionalProperties", false)
         val request = JSONObject()
-            .put("model", BuildConfig.GEMINI_MODEL)
+            .put("model", model)
+            .put("reasoning", JSONObject().put("effort", "none"))
             .put(
                 "input",
                 JSONArray().put(
-                    JSONObject().put("type", "user_input").put("content", content),
+                    JSONObject().put("role", "user").put("content", content),
                 ),
             )
             .put("store", false)
-            .put(
-                "response_format",
-                JSONObject()
-                    .put("type", "text")
-                    .put("mime_type", "application/json")
-                    .put("schema", explanationSchema),
-            )
-        val connection = (URL(INTERACTIONS_ENDPOINT).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 8_000
-            readTimeout = 15_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("x-goog-api-key", BuildConfig.GEMINI_API_KEY)
-        }
-        synchronized(connectionLock) {
-            if (requestId != requestGeneration.get()) {
-                connection.disconnect()
-                throw GeminiPlannerException("Gemini request was cancelled")
+            .put("text", responseTextConfig("screen_explanation", explanationSchema))
+        return executeJsonRequest(request, requestId).getString("explanation").trim().take(1_500)
+            .ifBlank {
+                throw OpenAiPlannerException("OpenAI returned an empty explanation")
             }
-            activeConnection = connection
-        }
-        try {
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(request.toString()) }
-            val status = connection.responseCode
-            if (status !in 200..299) {
-                throw GeminiPlannerException(connection.failureMessage(status))
-            }
-            val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val steps = JSONObject(response).optJSONArray("steps")
-                ?: throw GeminiPlannerException("Gemini response had no steps")
-            for (stepIndex in 0 until steps.length()) {
-                val step = steps.optJSONObject(stepIndex) ?: continue
-                if (step.optString("type") != "model_output") continue
-                val parts = step.optJSONArray("content") ?: continue
-                for (partIndex in 0 until parts.length()) {
-                    val part = parts.optJSONObject(partIndex) ?: continue
-                    if (part.optString("type") != "text") continue
-                    val jsonText = part.optString("text").trim()
-                        .removePrefix("```json")
-                        .removePrefix("```")
-                        .removeSuffix("```")
-                        .trim()
-                    return JSONObject(jsonText).getString("explanation").trim().take(1_500)
-                        .ifBlank {
-                            throw GeminiPlannerException("Gemini returned an empty explanation")
-                        }
-                }
-            }
-            throw GeminiPlannerException("Gemini response had no text output")
-        } finally {
-            connection.disconnect()
-            synchronized(connectionLock) {
-                if (activeConnection === connection) activeConnection = null
-            }
-        }
     }
 
     private fun createPlan(
@@ -346,67 +274,19 @@ class GeminiPlanner(
         autonomyContext: String?,
         requestId: Long,
     ): AgentPlan {
-        if (!isConfigured) throw GeminiPlannerException("Gemini API key is not configured")
-        val prompt = buildPrompt(
+        if (!isConfigured) throw OpenAiPlannerException("OpenAI API key is not configured")
+        val request = buildPlanRequest(
             command,
             snapshot,
+            semanticMapJpegBase64,
             userFeedbackGuidance,
             autonomyContext,
-            visualFallbackActive = semanticMapJpegBase64 != null,
         )
-        val content = JSONArray().put(JSONObject().put("type", "text").put("text", prompt))
-        if (!semanticMapJpegBase64.isNullOrBlank()) {
-            content.put(
-                JSONObject()
-                    .put("type", "image")
-                    .put("data", semanticMapJpegBase64)
-                    .put("mime_type", "image/jpeg"),
-            )
-        }
-        val input = JSONArray().put(
-            JSONObject()
-                .put("type", "user_input")
-                .put("content", content),
-        )
-
-        val request = JSONObject()
-            .put("model", BuildConfig.GEMINI_MODEL)
-            .put("input", input)
-            .put("store", false)
-            .put("response_format", responseFormat(allowVisualCoordinates = semanticMapJpegBase64 != null))
-
-        val connection = (URL(INTERACTIONS_ENDPOINT).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 8_000
-            readTimeout = 15_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("x-goog-api-key", BuildConfig.GEMINI_API_KEY)
-        }
-
-        synchronized(connectionLock) {
-            if (requestId != requestGeneration.get()) {
-                connection.disconnect()
-                throw GeminiPlannerException("Gemini request was cancelled")
-            }
-            activeConnection = connection
-        }
-
-        try {
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
-                writer.write(request.toString())
-            }
-            val status = connection.responseCode
-            if (status !in 200..299) {
-                throw GeminiPlannerException(connection.failureMessage(status))
-            }
-            val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            return parsePlan(response, semanticMapJpegBase64 != null)
-        } finally {
-            connection.disconnect()
-            synchronized(connectionLock) {
-                if (activeConnection === connection) activeConnection = null
-            }
+        return runCatching {
+            parsePlan(executeJsonRequest(request, requestId), semanticMapJpegBase64 != null)
+        }.getOrElse { error ->
+            if (error is OpenAiPlannerException) throw error
+            throw OpenAiPlannerException("OpenAI returned an invalid structured plan", error)
         }
     }
 
@@ -466,7 +346,7 @@ class GeminiPlanner(
         ${snapshot.compactText()}
     """.trimIndent()
 
-    private fun responseFormat(allowVisualCoordinates: Boolean): JSONObject {
+    internal fun responseSchema(allowVisualCoordinates: Boolean): JSONObject {
         val actionTypes = JSONArray().apply {
             ActionType.entries
                 .filter { allowVisualCoordinates || it != ActionType.CLICK_COORDINATE }
@@ -581,47 +461,68 @@ class GeminiPlanner(
             )
             .put("additionalProperties", false)
 
+        return schema
+    }
+
+    internal fun buildPlanRequest(
+        command: String,
+        snapshot: UiSnapshot,
+        semanticMapJpegBase64: String? = null,
+        userFeedbackGuidance: String? = null,
+        autonomyContext: String? = null,
+    ): JSONObject {
+        val prompt = buildPrompt(
+            command,
+            snapshot,
+            userFeedbackGuidance,
+            autonomyContext,
+            visualFallbackActive = semanticMapJpegBase64 != null,
+        )
+        val content = JSONArray().put(JSONObject().put("type", "input_text").put("text", prompt))
+        if (!semanticMapJpegBase64.isNullOrBlank()) {
+            content.put(
+                JSONObject()
+                    .put("type", "input_image")
+                    .put("image_url", jpegDataUrl(semanticMapJpegBase64)),
+            )
+        }
         return JSONObject()
-            .put("type", "text")
-            .put("mime_type", "application/json")
-            .put("schema", schema)
+            .put("model", model)
+            .put("reasoning", JSONObject().put("effort", "none"))
+            .put(
+                "input",
+                JSONArray().put(JSONObject().put("role", "user").put("content", content)),
+            )
+            .put("store", false)
+            .put(
+                "text",
+                responseTextConfig(
+                    "sonju_agent_plan",
+                    responseSchema(allowVisualCoordinates = semanticMapJpegBase64 != null),
+                ),
+            )
+    }
+
+    internal fun parsePlanResponse(
+        responseBody: String,
+        usedSemanticMap: Boolean = false,
+    ): AgentPlan = runCatching {
+        parsePlan(parseStructuredJson(responseBody), usedSemanticMap)
+    }.getOrElse { error ->
+        if (error is OpenAiPlannerException) throw error
+        throw OpenAiPlannerException("OpenAI returned an invalid structured plan", error)
     }
 
     private fun parsePlan(
-        responseBody: String,
+        json: JSONObject,
         usedSemanticMap: Boolean,
     ): AgentPlan {
-        val response = JSONObject(responseBody)
-        val steps = response.optJSONArray("steps")
-            ?: throw GeminiPlannerException("Gemini response had no steps")
-        var outputText: String? = null
-        for (stepIndex in 0 until steps.length()) {
-            val step = steps.optJSONObject(stepIndex) ?: continue
-            if (step.optString("type") != "model_output") continue
-            val content = step.optJSONArray("content") ?: continue
-            for (contentIndex in 0 until content.length()) {
-                val part = content.optJSONObject(contentIndex) ?: continue
-                if (part.optString("type") == "text") {
-                    outputText = part.optString("text")
-                    break
-                }
-            }
-            if (outputText != null) break
-        }
-
-        val rawPlan = outputText?.trim()
-            ?.removePrefix("```json")
-            ?.removePrefix("```")
-            ?.removeSuffix("```")
-            ?.trim()
-            ?: throw GeminiPlannerException("Gemini response had no text output")
-        val json = JSONObject(rawPlan)
         val actionsJson = json.getJSONArray("actions")
         val actions = buildList {
             for (index in 0 until actionsJson.length()) {
                 val item = actionsJson.getJSONObject(index)
                 val type = runCatching { ActionType.valueOf(item.getString("type")) }
-                    .getOrElse { throw GeminiPlannerException("Gemini returned an unsupported action") }
+                    .getOrElse { throw OpenAiPlannerException("OpenAI returned an unsupported action") }
                 add(
                     AgentAction(
                         type = type,
@@ -646,9 +547,9 @@ class GeminiPlanner(
             confidence = json.getDouble("confidence").coerceIn(0.0, 1.0),
             actions = actions,
             source = if (usedSemanticMap) {
-                PlanSource.GEMINI_SEMANTIC_MAP
+                PlanSource.OPENAI_SEMANTIC_MAP
             } else {
-                PlanSource.GEMINI_STRUCTURE
+                PlanSource.OPENAI_STRUCTURE
             },
             continueAfterAction = json.optBoolean("continue_after_action", false),
             goalCompleted = json.optBoolean("goal_completed", false),
@@ -663,12 +564,75 @@ class GeminiPlanner(
     }
 
     companion object {
-        private const val INTERACTIONS_ENDPOINT =
-            "https://generativelanguage.googleapis.com/v1/interactions"
+        private const val RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses"
         private val SEMANTIC_IMAGE_INSTRUCTIONS = """
             추가 이미지가 있다면 원본 스크린샷이 아니라 민감값을 제거한 의미 노드 배치도다.
             배치도에 표시되지 않은 Canvas/WebView 픽셀이나 숨은 요소를 추측하지 않는다.
         """.trimIndent()
+    }
+
+    private fun responseTextConfig(name: String, schema: JSONObject): JSONObject = JSONObject()
+        .put(
+            "format",
+            JSONObject()
+                .put("type", "json_schema")
+                .put("name", name)
+                .put("strict", true)
+                .put("schema", schema),
+        )
+
+    private fun jpegDataUrl(base64: String): String = "data:image/jpeg;base64,$base64"
+
+    internal fun parseStructuredJson(responseBody: String): JSONObject {
+        try {
+            val response = JSONObject(responseBody)
+            when (response.optString("status")) {
+                "failed" -> throw OpenAiPlannerException("OpenAI response failed")
+                "incomplete", "cancelled", "queued", "in_progress" ->
+                    throw OpenAiPlannerException("OpenAI response was incomplete")
+            }
+            val output = response.optJSONArray("output")
+                ?: throw OpenAiPlannerException("OpenAI response had no output")
+            var refusalSeen = false
+            var outputText: String? = null
+            for (outputIndex in 0 until output.length()) {
+                val item = output.optJSONObject(outputIndex) ?: continue
+                if (item.optString("type") != "message") continue
+                val content = item.optJSONArray("content") ?: continue
+                for (contentIndex in 0 until content.length()) {
+                    val part = content.optJSONObject(contentIndex) ?: continue
+                    when (part.optString("type")) {
+                        "refusal" -> refusalSeen = true
+                        "output_text" -> {
+                            val text = part.optString("text").trim()
+                            if (text.isNotBlank() && outputText == null) outputText = text
+                        }
+                    }
+                }
+            }
+            if (refusalSeen) throw OpenAiPlannerException("OpenAI refused the request")
+            return JSONObject(
+                outputText ?: throw OpenAiPlannerException(
+                    "OpenAI response had no structured text output",
+                ),
+            )
+        } catch (error: OpenAiPlannerException) {
+            throw error
+        } catch (error: Exception) {
+            throw OpenAiPlannerException("OpenAI returned invalid response JSON", error)
+        }
+    }
+
+    internal fun failureMessage(status: Int, errorBody: String): String {
+        val error = runCatching { JSONObject(errorBody).optJSONObject("error") }.getOrNull()
+        val code = error?.optString("code").orEmpty()
+        val type = error?.optString("type").orEmpty()
+        return when {
+            status == 401 || code == "invalid_api_key" || type == "authentication_error" ->
+                "OpenAI API key is invalid"
+            status == 429 -> "OpenAI request was rate limited"
+            else -> "OpenAI request failed with HTTP $status"
+        }
     }
 
     private fun HttpURLConnection.failureMessage(status: Int): String {
@@ -677,14 +641,7 @@ class GeminiPlanner(
                 reader.readText().take(4_096)
             }
         }.getOrNull().orEmpty()
-        return if (
-            errorBody.contains("API key not valid", ignoreCase = true) ||
-            errorBody.contains("API_KEY_INVALID", ignoreCase = true)
-        ) {
-            "Gemini API key is invalid"
-        } else {
-            "Gemini request failed with HTTP $status"
-        }
+        return failureMessage(status, errorBody)
     }
 
     override fun close() {
@@ -720,4 +677,4 @@ class GeminiPlanner(
 
 }
 
-class GeminiPlannerException(message: String) : Exception(message)
+class OpenAiPlannerException(message: String, cause: Throwable? = null) : Exception(message, cause)

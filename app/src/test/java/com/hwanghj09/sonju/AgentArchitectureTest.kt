@@ -128,7 +128,7 @@ class AgentArchitectureTest {
         assertTrue(verifier.verify(intent, task, normal, snapshot, screen) is VerificationResult.Blocked)
 
         val visual = normal.copy(
-            source = PlanSource.GEMINI_SEMANTIC_MAP,
+            source = PlanSource.OPENAI_SEMANTIC_MAP,
             visualFallback = true,
         )
         assertTrue(verifier.verify(intent, task, visual, snapshot, screen) is VerificationResult.Allowed)
@@ -288,7 +288,7 @@ class AgentArchitectureTest {
             verifier.verify(
                 intent,
                 task,
-                local.copy(source = PlanSource.GEMINI_STRUCTURE),
+                local.copy(source = PlanSource.OPENAI_STRUCTURE),
                 snapshot,
                 screen,
             ) is VerificationResult.Blocked,
@@ -370,7 +370,7 @@ class AgentArchitectureTest {
             DeterministicActionVerifier().verify(
                 intent,
                 task,
-                local.copy(source = PlanSource.GEMINI_STRUCTURE),
+                local.copy(source = PlanSource.OPENAI_STRUCTURE),
                 snapshot,
                 screen,
             ) is VerificationResult.NeedsReplan,
@@ -893,7 +893,7 @@ class AgentArchitectureTest {
         modelRisk = RiskLevel.LOW,
         confidence = 1.0,
         actions = listOf(action, AgentAction(ActionType.FINISH, "observe")),
-        source = PlanSource.GEMINI_STRUCTURE,
+        source = PlanSource.OPENAI_STRUCTURE,
     )
 
     private fun snapshot(vararg elements: UiElement): UiSnapshot = UiSnapshot(

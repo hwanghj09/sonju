@@ -227,7 +227,7 @@ class DeterministicActionVerifier(
             screen = screen,
         )
         if (visual && (!plan.visualFallback ||
-                plan.source != PlanSource.GEMINI_SEMANTIC_MAP && !verifiedAppAdapterCoordinate)
+                plan.source != PlanSource.OPENAI_SEMANTIC_MAP && !verifiedAppAdapterCoordinate)
         ) {
             return VerificationResult.Blocked("일반 계획 경로에서는 좌표 동작을 실행할 수 없습니다.")
         }

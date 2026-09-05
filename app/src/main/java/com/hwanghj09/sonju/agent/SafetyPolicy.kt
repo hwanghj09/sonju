@@ -3,7 +3,7 @@ package com.hwanghj09.sonju.agent
 import java.text.Normalizer
 
 /**
- * Deterministic guardrail. Gemini's own risk label is informative only; this policy owns the final
+ * Deterministic guardrail. The model's own risk label is informative only; this policy owns the final
  * decision and fails closed on ambiguity.
  */
 object SafetyPolicy {

@@ -42,4 +42,4 @@ try {
 6. payment/OTP/ambiguous/truncated/화면 변경 시 executor가 fail closed 하는지 확인한다.
 7. 중단 버튼, notification action, session timeout에서 즉시 취소되는지 확인한다.
 
-단위 테스트와 APK 생성은 실기기, Gemini/VLM 운영 API, OEM별 동작, 배터리·메모리, Play 정책 승인을 증명하지 않는다. 결과 보고에서 각 경계를 분리한다.
+단위 테스트와 APK 생성은 실기기, OpenAI/VLM 운영 API, OEM별 동작, 배터리·메모리, Play 정책 승인을 증명하지 않는다. 결과 보고에서 각 경계를 분리한다.

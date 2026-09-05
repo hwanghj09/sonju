@@ -697,8 +697,8 @@ class SafetyPolicyTest {
     @Test
     fun modelGeneratedActionAlwaysRequiresConfirmation() {
         listOf(
-            PlanSource.GEMINI_STRUCTURE,
-            PlanSource.GEMINI_SEMANTIC_MAP,
+            PlanSource.OPENAI_STRUCTURE,
+            PlanSource.OPENAI_SEMANTIC_MAP,
         ).forEach { source ->
             val assessment = SafetyPolicy.evaluate(
                 command = "도움말을 눌러 줘",
@@ -740,7 +740,7 @@ class SafetyPolicyTest {
         modelRisk = RiskLevel.LOW,
         confidence = 0.95,
         actions = actions.toList(),
-        source = PlanSource.GEMINI_STRUCTURE,
+        source = PlanSource.OPENAI_STRUCTURE,
     )
 
     private fun snapshot(vararg elements: UiElement) = UiSnapshot(

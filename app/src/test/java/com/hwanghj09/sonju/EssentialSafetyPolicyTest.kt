@@ -131,7 +131,7 @@ class EssentialSafetyPolicyTest {
         modelRisk = RiskLevel.LOW,
         confidence = 1.0,
         actions = listOf(action, AgentAction(ActionType.FINISH, "끝")),
-        source = PlanSource.GEMINI_STRUCTURE,
+        source = PlanSource.OPENAI_STRUCTURE,
         targetSurface = action.description,
     )
 

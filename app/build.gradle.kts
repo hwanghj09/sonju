@@ -11,9 +11,11 @@ val localProperties = Properties().apply {
     }
 }
 
-val geminiApiKey = localProperties.getProperty("GEMINI_API_KEY")
-    ?: System.getenv("GEMINI_API_KEY")
-    ?: ""
+val openAiApiKey = localProperties.getProperty("OPENAI_API_KEY").orEmpty().trim()
+    .ifBlank { System.getenv("OPENAI_API_KEY").orEmpty().trim() }
+val openAiModel = localProperties.getProperty("OPENAI_MODEL").orEmpty().trim()
+    .ifBlank { System.getenv("OPENAI_MODEL").orEmpty().trim() }
+    .ifBlank { "gpt-5.6-luna" }
 
 fun String.asBuildConfigString(): String =
     "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
@@ -34,7 +36,7 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "GEMINI_MODEL", "gemini-3.1-flash-lite".asBuildConfigString())
+        buildConfigField("String", "OPENAI_MODEL", openAiModel.asBuildConfigString())
     }
 
     buildFeatures {
@@ -43,10 +45,10 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "GEMINI_API_KEY", geminiApiKey.asBuildConfigString())
+            buildConfigField("String", "OPENAI_API_KEY", openAiApiKey.asBuildConfigString())
         }
         release {
-            buildConfigField("String", "GEMINI_API_KEY", "".asBuildConfigString())
+            buildConfigField("String", "OPENAI_API_KEY", "".asBuildConfigString())
             optimization {
                 enable = false
             }
@@ -67,6 +69,7 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
 }

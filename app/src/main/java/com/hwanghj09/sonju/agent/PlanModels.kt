@@ -47,8 +47,8 @@ enum class PlanSource {
     LOCAL_RULE,
     APP_ADAPTER,
     SKILL_FAST_PATH,
-    GEMINI_STRUCTURE,
-    GEMINI_SEMANTIC_MAP,
+    OPENAI_STRUCTURE,
+    OPENAI_SEMANTIC_MAP,
 }
 
 /** Accessibility actions exposed by a live node and safe to share with the planner. */
