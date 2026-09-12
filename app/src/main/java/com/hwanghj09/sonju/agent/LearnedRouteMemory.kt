@@ -78,6 +78,7 @@ class LearnedRouteMemory(context: Context) {
     }
 
     fun remember(session: AutonomySession, completedPlan: AgentPlan) {
+        if (HospitalReservationWorkflow.matches(session.finalGoal)) return
         val steps = RouteLearningPolicy.shortestReusableSteps(session.history)
         if (steps.isEmpty()) return
         val route = LearnedRoute(
@@ -227,7 +228,9 @@ internal object RouteLearningPolicy {
 
     fun routeCost(steps: List<LearnedRouteStep>): Double = steps.sumOf { step ->
         when (step.type) {
+            ActionType.START_TIMER -> 0.8
             ActionType.OPEN_APP,
+            ActionType.OPEN_URL,
             ActionType.OPEN_WIFI_SETTINGS,
             ActionType.OPEN_SOUND_SETTINGS,
             ActionType.OPEN_ACCESSIBILITY_SETTINGS,
@@ -256,6 +259,7 @@ internal object RouteLearningPolicy {
             -> 1.1
 
             ActionType.WAIT -> 0.4
+            ActionType.WAIT_FOR_USER -> 1.0
             ActionType.FINISH -> 0.0
         }
     }

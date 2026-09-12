@@ -349,6 +349,82 @@ class UiTreeReaderTest {
         assertFalse(protected.first { it.path == unrelatedCard.path }.sensitive)
     }
 
+    @Test
+    fun fullArithmeticKeypadKeepsDigitButtonsVisible() {
+        val keypad = arithmeticKeypad()
+        assertTrue(UiTreeReader.markSplitCredentialClusters(keypad).none { it.sensitive })
+    }
+
+    @Test
+    fun numericPinKeypadWithoutArithmeticOperatorsRemainsProtected() {
+        val digits = arithmeticKeypad().filter { it.text?.toIntOrNull() != null }
+        assertTrue(UiTreeReader.markSplitCredentialClusters(digits).any { it.sensitive })
+    }
+
+    @Test
+    fun credentialPromptPreventsArithmeticExemption() {
+        val prompt = element("0.prompt", null, 0, top = 0).copy(sensitive = true)
+        val protected = UiTreeReader.markSplitCredentialClusters(arithmeticKeypad() + prompt)
+        assertTrue(protected.filter { it.text == null }.size > 1)
+    }
+
+    @Test
+    fun arithmeticDisplayNumbersRequireTheFullObservedKeypad() {
+        val display = element("0.display", "계산기 입력란 3,288", 0, top = 0,
+            viewId = "com.example:id/formula")
+        val redacted = display.copy(text = null, sensitive = true)
+        assertTrue(UiTreeReader.isArithmeticDisplayCandidate(display))
+        assertTrue(UiTreeReader.isArithmeticDisplayCandidate(display.copy(text = "3,288 계산 결과")))
+        assertFalse(UiTreeReader.isArithmeticDisplayCandidate(display.copy(text = "3,288 인증번호")))
+        val candidates = mapOf(display.path to display)
+        assertTrue(UiTreeReader.restorePublicArithmeticDisplays(
+            listOf(redacted), candidates,
+        ).single().sensitive)
+        val restored = UiTreeReader.restorePublicArithmeticDisplays(
+            arithmeticKeypad() + redacted, candidates,
+        )
+        assertEquals(display, restored.last())
+        assertFalse(UiTreeReader.propagateSensitiveContext(
+            UiTreeReader.markSplitCredentialClusters(restored),
+        ).last().sensitive)
+    }
+
+    @Test
+    fun authenticationValueCannotBecomeAnArithmeticDisplay() {
+        val secret = element("0.display", "1234", 0,
+            contentDescription = "인증번호 결과", viewId = "com.example:id/result")
+        assertFalse(UiTreeReader.isArithmeticDisplayCandidate(secret))
+        assertTrue(UiTreeReader.restorePublicArithmeticDisplays(
+            arithmeticKeypad() + secret.copy(text = null, sensitive = true),
+            mapOf(secret.path to secret),
+        ).last().sensitive)
+        assertFalse(UiTreeReader.isArithmeticDisplayCandidate(
+            secret.copy(contentDescription = "계산 결과", text = "4111111111111111"),
+        ))
+    }
+
+    @Test
+    fun formattedArithmeticInputMustStillMatchTheExactRequestedExpression() {
+        val display = element("0.formula", "계산기 입력란 137×24", 0,
+            viewId = "com.example:id/formula")
+        assertTrue(UiTreeReader.matchesEnteredValue(display, "137*24"))
+        assertTrue(UiTreeReader.matchesEnteredValue(
+            display.copy(text = "계산기 입력란 146 곱하기 23"), "146*23",
+        ))
+        assertFalse(UiTreeReader.matchesEnteredValue(display, "137*25"))
+        assertFalse(UiTreeReader.matchesEnteredValue(display.copy(text = "1,2 계산 결과"), "12"))
+        assertFalse(UiTreeReader.matchesEnteredValue(display.copy(sensitive = true), "137*24"))
+        assertFalse(UiTreeReader.matchesEnteredValue(
+            display.copy(text = "message 137*24", viewId = "com.example:id/message"), "137*24",
+        ))
+    }
+
+    private fun arithmeticKeypad(): List<UiElement> =
+        ((0..9).map(Int::toString) + listOf("+", "−", "×", "÷", "=")).mapIndexed { i, key ->
+            element("0.keypad.$i", key, (i % 3) * 110, top = 300 + (i / 3) * 200,
+                clickable = true)
+        }
+
     private fun element(
         path: String,
         text: String?,

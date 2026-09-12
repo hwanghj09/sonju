@@ -84,7 +84,8 @@ class AgentArchitectureTest {
         val screen = AccessibilityScreenParser.parse(
             snapshot(
                 element("0", clickable = true),
-                element("0.0", text = "서울역"),
+                // The inert 0.0 layout is omitted by UiTreeReader on real Samsung screens.
+                element("0.0.0", text = "서울역"),
             ),
         )
         val result = DeterministicSemanticGrounder().ground(
@@ -261,14 +262,14 @@ class AgentArchitectureTest {
     }
 
     @Test
-    fun querySubmitRequiresTheExactLocallyParsedQuery() {
+    fun querySubmitRequiresAnObservedSearchFieldAndExactCurrentValue() {
         val snapshot = snapshot(
             element(
                 path = "0.query",
                 text = "피자",
                 className = "android.widget.EditText",
                 editable = true,
-            ),
+            ).copy(hintText = "검색"),
         )
         val screen = AccessibilityScreenParser.parse(snapshot)
         val intent = DeterministicTaskParser.parse("배민에서 피자 찾아줘")
@@ -291,7 +292,7 @@ class AgentArchitectureTest {
                 local.copy(source = PlanSource.OPENAI_STRUCTURE),
                 snapshot,
                 screen,
-            ) is VerificationResult.Blocked,
+            ) is VerificationResult.Allowed,
         )
         assertTrue(
             verifier.verify(
@@ -305,19 +306,19 @@ class AgentArchitectureTest {
                 ),
                 snapshot,
                 screen,
-            ) is VerificationResult.Blocked,
+            ) is VerificationResult.NeedsReplan,
         )
     }
 
     @Test
-    fun directionsSubmitRequiresTheExactLocallyParsedDestination() {
+    fun directionsSubmitRequiresAnObservedDestinationSearchAndExactCurrentValue() {
         val snapshot = snapshot(
             element(
                 path = "0.destination",
                 text = "서울역",
                 className = "android.widget.EditText",
                 editable = true,
-            ),
+            ).copy(hintText = "목적지 검색"),
         )
         val screen = AccessibilityScreenParser.parse(snapshot)
         val intent = DeterministicTaskParser.parse("서울역 가는 길 알려줘")
@@ -345,7 +346,7 @@ class AgentArchitectureTest {
                 ),
                 snapshot,
                 screen,
-            ) is VerificationResult.Blocked,
+            ) is VerificationResult.NeedsReplan,
         )
     }
 
@@ -436,7 +437,57 @@ class AgentArchitectureTest {
     }
 
     @Test
-    fun underSpecifiedFoodOrderRequiresConfirmationBeforeChoosingOneRestaurant() {
+    fun approvalTracksTheObservedEffectInsteadOfRequestRiskNarrationOrResourceIds() {
+        val verifier = DeterministicActionVerifier()
+        val intent = DeterministicTaskParser.parse("예약하고 친구에게 메시지 보내줘")
+        val controls = listOf("예약", "예약 날짜 선택", "결제 수단", "주문 메뉴", "예약 확인", "확인", "완료",
+            "Confirm", "Bookmarks", "예약 내역", "삭제 방법", "게시판", "발행일", "닫기", "취소", "장바구니 담기")
+        controls.forEach { label ->
+            val observed = snapshot(element("0.0", text = label, clickable = true)
+                .copy(viewId = "app:id/order_confirm_button"))
+            val screen = AccessibilityScreenParser.parse(observed)
+            val task = DeterministicTaskCanonicalizer.canonicalize(intent, screen)
+            val action = AgentAction(ActionType.CLICK, "예약 확정과 메시지 전송을 위한 준비 단계", "app:id/order_confirm_button")
+            assertTrue(label, verifier.verify(intent, task, plan(action), observed, screen) is VerificationResult.Allowed)
+        }
+
+        val draft = snapshot(element("0.0", text = "", editable = true, className = "android.widget.EditText"))
+        val draftScreen = AccessibilityScreenParser.parse(draft)
+        val task = DeterministicTaskCanonicalizer.canonicalize(intent, draftScreen)
+        assertTrue(verifier.verify(intent, task,
+            plan(AgentAction(ActionType.SET_TEXT, "메시지 전송을 준비합니다", "0.0", "내일 만나요")),
+            draft, draftScreen) is VerificationResult.Allowed)
+
+        listOf("전송", "삭제", "예약 확정", "삭제하고 내역 보기", "Send").forEach { label ->
+            val observed = snapshot(element("0.0", clickable = true), element("0.0.1", text = label))
+            val screen = AccessibilityScreenParser.parse(observed)
+            val action = plan(AgentAction(ActionType.CLICK, "다음 화면 열기", "0.0"))
+            assertTrue(label, verifier.verify(intent, task, action, observed, screen) is VerificationResult.NeedsConfirmation)
+            assertTrue(label, verifier.verify(intent, task, action, observed, screen, true) is VerificationResult.Allowed)
+        }
+
+        listOf("기록을 삭제하시겠습니까?" to false, "예약하시겠습니까?" to false,
+            "결제를 진행할까요?" to true).forEach { (prompt, critical) ->
+            val observed = snapshot(element("0", text = prompt), element("0.0", text = "확인", clickable = true))
+            val screen = AccessibilityScreenParser.parse(observed)
+            val action = plan(AgentAction(ActionType.CLICK, "확인 버튼", "0.0"))
+            val result = verifier.verify(intent, task, action, observed, screen)
+            assertTrue(prompt, if (critical) result is VerificationResult.Blocked else result is VerificationResult.NeedsConfirmation)
+        }
+        listOf("결제하기", "송금하기", "구매", "Pay", "Transfer", "Buy now", "Purchase", "Confirm payment", "Confirm transfer").forEach { label ->
+            val observed = snapshot(element("0.0", text = label, clickable = true))
+            val screen = AccessibilityScreenParser.parse(observed)
+            val action = plan(AgentAction(ActionType.CLICK, "다음", "0.0"))
+            assertTrue(label, verifier.verify(intent, task, action, observed, screen, true) is VerificationResult.Blocked)
+        }
+        val booking = snapshot(element("0", text = "이 내용으로 예약하시겠습니까?"),
+            element("0.0", text = "예약 확인", clickable = true))
+        assertTrue(verifier.verify(intent, task, plan(AgentAction(ActionType.CLICK, "다음", "0.0")),
+            booking, AccessibilityScreenParser.parse(booking)) is VerificationResult.NeedsConfirmation)
+    }
+
+    @Test
+    fun browsingARestaurantDoesNotRequireApprovalBeforeAnyPurchase() {
         val snapshot = snapshot(
             element("0"),
             element("0.0", text = "도미노피자", clickable = true),
@@ -451,7 +502,7 @@ class AgentArchitectureTest {
 
         assertTrue(
             verifier.verify(intent, task, restaurantPlan, snapshot, screen) is
-                VerificationResult.NeedsConfirmation,
+                VerificationResult.Allowed,
         )
         assertTrue(
             verifier.verify(
@@ -466,7 +517,35 @@ class AgentArchitectureTest {
     }
 
     @Test
-    fun explicitPopularRankAllowsOnlyTheLocalRankedChoiceAndCartReviewNavigation() {
+    fun implicitFoodOrderAllowsTheLocalBestAvailableChoice() {
+        val snapshot = snapshot(
+            element("0"),
+            element("0.0", text = "설렁탕집 별점 4.8 리뷰 300", clickable = true),
+        ).copy(packageName = "com.sampleapp")
+        val screen = AccessibilityScreenParser.parse(snapshot)
+        val intent = DeterministicTaskParser.parse("설렁탕 시켜줘")
+        val task = DeterministicTaskCanonicalizer.canonicalize(intent, screen)
+        val restaurantPlan = plan(
+            AgentAction(
+                ActionType.CLICK,
+                "요청한 인기순 결과의 첫 번째 비광고 '설렁탕' 식당을 선택합니다.",
+                "0.0",
+            ),
+        ).copy(source = PlanSource.LOCAL_RULE)
+
+        assertTrue(
+            DeterministicActionVerifier().verify(
+                intent,
+                task,
+                restaurantPlan,
+                snapshot,
+                screen,
+            ) is VerificationResult.Allowed,
+        )
+    }
+
+    @Test
+    fun explicitPopularRankAllowsTheLocalRankedChoiceAndCartReviewNavigation() {
         val command = "가장 인기 있는 파스타 집에서 가장 인기 있는 파스타 주문해줘"
         val restaurantSnapshot = snapshot(
             element("0", text = "주문 많은 순"),
@@ -802,7 +881,7 @@ class AgentArchitectureTest {
             afterTemplateFingerprint = "screen-result",
         )
         val skill = requireNotNull(
-            SkillLearner.learn(task, listOf(trace), "fallback-before", "fallback-after"),
+            SkillLearner.learn(task, listOf(trace), "fallback-before", "screen-result"),
         )
         assertEquals("${'$'}{query}", skill.steps.single().action.valueTemplate)
 

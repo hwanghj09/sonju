@@ -12,6 +12,15 @@ import org.junit.Test
 
 class ScreenContextHandoffTest {
     @Test
+    fun exactSingleCharacterLabelsSurviveLiveTargetRevalidation() {
+        assertTrue(ScreenContextHandoff.labelsCompatible(listOf("1"), listOf("1")))
+        assertTrue(ScreenContextHandoff.labelsCompatible(listOf("+"), listOf("+")))
+        assertTrue(ScreenContextHandoff.labelsCompatible(listOf("１"), listOf("1")))
+        assertFalse(ScreenContextHandoff.labelsCompatible(listOf("1"), listOf("2")))
+        assertFalse(ScreenContextHandoff.labelsCompatible(listOf("+"), listOf("-")))
+    }
+
+    @Test
     fun captureRetriesWhileTheScreenIsChangingOrStillEmpty() {
         val empty = UiSnapshot.empty(epoch = 10).copy(packageName = "com.sampleapp")
         val oneElement = snapshot(epoch = 10)
@@ -153,6 +162,11 @@ class ScreenContextHandoffTest {
         )
         assertNull(ScreenContextHandoff.resumeForTextInput(expected, changedInput, "0.query"))
         assertNull(ScreenContextHandoff.resumeForTextInput(expected, refreshedSuggestions, null))
+        val entering = expected.copy(elements = expected.elements.map { it.copy(
+            bounds = ScreenBounds(180, 0, 480, 100), focused = !it.focused) })
+        assertEquals(entering, ScreenContextHandoff.resumeForTextInput(expected, entering, "0.query"))
+        assertNull(ScreenContextHandoff.resumeForTextInput(expected,
+            entering.copy(elements = entering.elements.map { if (it.editable) it.copy(text = "치킨") else it }), "0.query"))
     }
 
     @Test
@@ -232,6 +246,42 @@ class ScreenContextHandoffTest {
         )
 
         assertEquals(live, ScreenContextHandoff.resumeForClick(expected, live, button.path))
+    }
+
+    @Test
+    fun enteringPageAnimationCanMoveAUniqueButtonButChangedValuesCannot() {
+        val button = element("0.1", "글자 크기와 스타일", clickable = true)
+            .copy(bounds = ScreenBounds(198, 2572, 1218, 2640), viewId = "android:id/row")
+        val amount = element("0.2", "금액 1000원")
+        val expected = snapshot(1).copy(elements = listOf(button, amount))
+        val live = expected.copy(epoch = 2, elements = listOf(
+            button.copy(bounds = ScreenBounds(30, 2572, 1050, 2640), focused = true), amount))
+        assertEquals(button.path, ScreenContextHandoff.relocateClickTarget(expected, live, button.path))
+        assertNull(ScreenContextHandoff.relocateClickTarget(expected,
+            live.copy(elements = live.elements.map { if (it.path == amount.path) it.copy(text = "금액 9000원") else it }),
+            button.path))
+        assertNull(ScreenContextHandoff.relocateClickTarget(expected,
+            live.copy(elements = listOf(button.copy(text = "다른 메뉴"), amount)), button.path))
+    }
+
+    @Test
+    fun unlabeledSwitchMovesOnlyWhenItsUniqueResourceAndWholeScreenStateStayTheSame() {
+        val toggle = element("0.1.1", "", clickable = true).copy(
+            viewId = "android:id/switch_widget", className = "android.widget.Switch",
+            checkable = true, checked = false, bounds = ScreenBounds(35, 1257, 122, 1311))
+        val label = element("0.1.0", "글자 굵게")
+        val expected = snapshot(1).copy(elements = listOf(toggle, label))
+        val movedToggle = toggle.copy(bounds = ScreenBounds(888, 1250, 984, 1310))
+        val live = expected.copy(epoch = 2, elements = listOf(movedToggle, label))
+        assertEquals(toggle.path, ScreenContextHandoff.relocateClickTarget(expected, live, toggle.path))
+        assertNull(ScreenContextHandoff.relocateClickTarget(expected,
+            live.copy(elements = listOf(movedToggle, label.copy(text = "다른 설정"))), toggle.path))
+        assertNull(ScreenContextHandoff.relocateClickTarget(expected,
+            live.copy(elements = listOf(movedToggle.copy(checked = true), label)), toggle.path))
+        assertNull(ScreenContextHandoff.relocateClickTarget(expected,
+            live.copy(elements = live.elements + movedToggle.copy(path = "0.2.1")), toggle.path))
+        assertNull(ScreenContextHandoff.relocateClickTarget(expected,
+            expected.copy(elements = listOf(toggle.copy(checked = true), label)), toggle.path))
     }
 
     @Test

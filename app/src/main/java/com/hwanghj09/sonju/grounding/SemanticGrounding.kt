@@ -191,9 +191,11 @@ class DeterministicSemanticGrounder(
         if (node.clickable) return node
         var parentId = node.parentId
         repeat(MAX_ANCESTOR_DEPTH) {
-            val parent = parentId?.let(byId::get) ?: return null
-            if (parent.visible && parent.enabled && parent.clickable) return parent
-            parentId = parent.parentId
+            val path = parentId ?: return null
+            val parent = byId[path]
+            if (parent != null && parent.visible && parent.enabled && parent.clickable) return parent
+            // UiTreeReader omits inert layout containers; their path still identifies the ancestry.
+            parentId = parent?.parentId ?: path.substringBeforeLast('.', "").takeIf(String::isNotBlank)
         }
         return null
     }

@@ -112,7 +112,7 @@
     <string name="technology_description">버튼 이름·위치·상태 구조를 먼저 읽고, 접근성으로 대상을 찾지 못하면 안전한 화면만 OpenAI에 보내 시각적으로 찾습니다.</string>
     <string name="powered_by">OpenAI · Neuro-Symbolic Safety</string>
     <string name="privacy_dialog_title">손주가 화면을 이해하는 방법</string>
-    <string name="privacy_dialog_message">손주는 접근성 기능으로 현재 앱 이름, 창 제목, 화면에 보이는 글자와 버튼 이름, 위치와 상태를 읽습니다. 접근성 구조에서 질문이나 실행 대상을 찾지 못하면 민감 정보가 없는 현재 화면의 스크린샷을 캡처해 사용자 요청과 함께 OpenAI Responses API로 전송할 수 있습니다. 모델이 반환한 계획과 화면 위치는 그대로 실행하지 않고 현재 화면 revision, 대상 유일성, 민감성, 위험도와 사용자 확인을 독립적으로 검사합니다. Android 10 이하 또는 secure window에서는 화면 캡처가 실패할 수 있습니다. 요청은 store=false로 보내지만, 이는 제공자의 보안·오용 방지 로그 등 서비스 운영상 보존까지 없앤다는 뜻은 아닙니다.\n\n결제·송금·비밀번호·PIN·OTP·인증정보 입력과 민감 화면 좌표 동작은 차단합니다. 주문 확정·메시지 전송처럼 되돌리기 어려운 동작은 실행 직전에 사용자 확인을 요구하며, 화면이 바뀌거나 대상이 모호하면 실행하지 않습니다.\n\n손주는 스스로 일을 시작하지 않으며 사용자의 음성 요청이 있을 때만 화면을 분석합니다. Android 백업은 사용하지 않습니다.</string>
+    <string name="privacy_dialog_message">손주는 접근성 기능으로 현재 앱 이름, 창 제목, 화면에 보이는 글자와 버튼 이름, 위치와 상태를 읽습니다. 요청에 맞는 앱을 찾기 위해 실행 가능한 설치 앱의 이름과 패키지 목록도 OpenAI에 전달합니다. 접근성 구조에서 질문이나 실행 대상을 찾지 못하면 민감 정보가 없는 현재 화면의 스크린샷을 캡처해 사용자 요청과 함께 OpenAI Responses API로 전송할 수 있습니다. 모델이 반환한 계획과 화면 위치는 그대로 실행하지 않고 현재 화면 revision, 대상 유일성, 민감성, 위험도와 사용자 확인을 독립적으로 검사합니다. Android 10 이하 또는 secure window에서는 화면 캡처가 실패할 수 있습니다. 요청은 store=false로 보내지만, 이는 제공자의 보안·오용 방지 로그 등 서비스 운영상 보존까지 없앤다는 뜻은 아닙니다.\n\n결제·송금·비밀번호·PIN·OTP·인증정보 입력과 민감 화면 좌표 동작은 차단합니다. 주문 확정·메시지 전송처럼 되돌리기 어려운 동작은 실행 직전에 사용자 확인을 요구하며, 화면이 바뀌거나 대상이 모호하면 실행하지 않습니다.\n\n손주는 스스로 일을 시작하지 않으며 사용자의 음성 요청이 있을 때만 화면을 분석합니다. Android 백업은 사용하지 않습니다.</string>
     <string name="privacy_accept">동의하고 연결하기</string>
     <string name="privacy_not_now">나중에</string>
     <string name="privacy_close">확인했어요</string>

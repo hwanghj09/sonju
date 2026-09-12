@@ -1,6 +1,5 @@
 package com.hwanghj09.sonju.agent
 
-import com.hwanghj09.sonju.task.DeterministicTaskParser
 import java.text.Normalizer
 import java.net.URI
 
@@ -21,49 +20,46 @@ object ScreenExplainer {
         "omnibox",
     )
 
-    fun classifyRequest(command: String): RequestKind {
-        val normalized = Normalizer.normalize(command, Normalizer.Form.NFKC)
-            .lowercase()
-            .replace(Regex("\\s+"), "")
-        val screenReadRequest = listOf("화면", "내용", "텍스트", "글", "메시지")
-            .any(normalized::contains) &&
-            listOf("읽어", "읽어줘", "읽어주세요", "read")
-                .any(normalized::contains)
-        if (screenReadRequest) return RequestKind.QUESTION
-        if (DeterministicTaskParser.parse(command).entities.containsKey("destination")) {
-            return RequestKind.COMMAND
+    fun classifyRequest(command: String): RequestKind =
+        if (com.hwanghj09.sonju.task.RequestInterpreter.understand(command).explainsCurrentContext) {
+            RequestKind.QUESTION
+        } else {
+            RequestKind.COMMAND
         }
-        val questionSignals = listOf(
-            "어떻게", "방법", "어디", "어느", "어떤", "왜", "뭐야", "뭔가", "무엇",
-            "알려", "설명", "사용법", "할수있", "할수있어", "가능해", "되나요", "돼요",
-            "인가요", "인가", "맞나요", "what", "how", "where", "why", "which",
-        )
-        if (questionSignals.any(normalized::contains)) return RequestKind.QUESTION
-
-        val executionSignals = listOf(
-            "눌러줘", "눌러주세요", "눌러줄래", "클릭해", "열어줘", "열어주세요",
-            "켜줘", "꺼줘", "바꿔줘", "변경해줘", "설정해줘", "검색해줘", "찾아줘",
-            "입력해줘", "보내줘", "실행해줘", "시작해줘", "이동해줘", "내려줘",
-            "올려줘", "뒤로가", "홈으로가", "주문해줘", "tap", "click", "open",
-        )
-        if (executionSignals.any(normalized::contains)) return RequestKind.COMMAND
-        if (listOf(
-                "눌러", "열어", "켜", "꺼", "검색해", "찾아", "입력해", "보내",
-                "실행해", "시작해", "내려", "올려", "주문해",
-            ).any(normalized::endsWith)
-        ) return RequestKind.COMMAND
-
-        val questionEnding = normalized.endsWith("?") || listOf(
-            "니", "나요", "가요", "까요", "거야", "돼", "야",
-        ).any(normalized::endsWith)
-        return if (questionEnding) RequestKind.QUESTION else RequestKind.COMMAND
-    }
 
     fun isExplanationRequest(command: String): Boolean =
         classifyRequest(command) == RequestKind.QUESTION
 
+    fun needsLocalPageRead(command: String, snapshot: UiSnapshot): Boolean =
+        com.hwanghj09.sonju.task.RequestInterpreter.understand(command).purpose ==
+            com.hwanghj09.sonju.task.RequestPurpose.SCREEN_EXPLANATION &&
+            isBrowserSurface(snapshot) && ScreenContextHandoff.hasUnobservedRenderedContent(snapshot) &&
+            snapshot.elements.none { it.visible && it.sensitive }
+
+    /** Local pixels are reading evidence only; they never become model input or executable nodes. */
+    fun pageReadingExplanation(command: String, snapshot: UiSnapshot): String? {
+        if (!isBrowserSurface(snapshot) || com.hwanghj09.sonju.task.RequestInterpreter.understand(command).purpose !=
+            com.hwanghj09.sonju.task.RequestPurpose.SCREEN_EXPLANATION) return null
+        val nativeLabels = snapshot.elements.flatMap { listOfNotNull(it.text, it.contentDescription) }.map(::compact).toSet()
+        val webRoots = snapshot.elements.filter { it.visible && it.className.endsWith("WebView") }.map { it.path }
+        val observedText = if (snapshot.localReadOnlyText.isNotEmpty()) {
+            snapshot.localReadOnlyText.filter { compact(it) !in nativeLabels }
+        } else {
+            snapshot.elements.filter { node -> node.visible && !node.sensitive && !node.editable &&
+                webRoots.any { node.path == it || node.path.startsWith("$it.") }
+            }.mapNotNull { it.text?.takeIf(String::isNotBlank) ?: it.contentDescription }
+        }
+        val lines = observedText.filter { line ->
+            line.length >= 2 && line.any(Char::isLetter) &&
+                !com.hwanghj09.sonju.accessibility.UiTreeReader.isSensitiveText(line)
+        }.distinct()
+        if (lines.isEmpty()) return null
+        return "현재 화면에서 읽은 내용이에요.\n" + lines.joinToString("\n").take(3_000)
+    }
+
     fun needsScreenshotFallback(command: String, snapshot: UiSnapshot): Boolean {
         if (!isExplanationRequest(command)) return false
+        if (ScreenContextHandoff.hasUnobservedRenderedContent(snapshot)) return true
         val compactCommand = compact(command)
         if ((compactCommand.contains("카톡") || compactCommand.contains("카카오톡")) &&
             compactCommand.contains("프로필") && compactCommand.contains("사진")
@@ -136,6 +132,10 @@ object ScreenExplainer {
         snapshot: UiSnapshot,
         browserUrl: String? = detectBrowserUrl(snapshot),
     ): String {
+        pageReadingExplanation(command, snapshot)?.let { return it }
+        if (ScreenContextHandoff.hasUnobservedRenderedContent(snapshot)) {
+            return "현재 화면의 본문이 접근성 정보에 없어 내용을 확인하지 못했어요. 화면을 다시 확인한 뒤 요청해 주세요."
+        }
         val normalizedCommand = Normalizer.normalize(command, Normalizer.Form.NFKC)
             .lowercase()
             .replace(Regex("\\s+"), "")

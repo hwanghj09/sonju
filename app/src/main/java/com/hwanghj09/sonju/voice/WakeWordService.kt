@@ -34,6 +34,7 @@ class WakeWordService : Service(), RecognitionListener {
     private var offlineSpeechService: SpeechService? = null
     private var offlineModelLoading = false
     private var pausedForCommand = false
+    private var controlOnly = false
     private var destroyed = false
 
     override fun onCreate() {
@@ -53,6 +54,7 @@ class WakeWordService : Service(), RecognitionListener {
             ACTION_STOP -> stopSelf()
             ACTION_PAUSE -> pauseListening()
             ACTION_RESUME -> resumeListening()
+            ACTION_CONTROL -> listenForControl()
         }
         return START_STICKY
     }
@@ -189,6 +191,12 @@ class WakeWordService : Service(), RecognitionListener {
         val candidates = bundle
             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             .orEmpty()
+        if (controlOnly) {
+            if (candidates.none(VoiceControl::isStopRequest)) return false
+            pauseListening()
+            SonjuAccessibilityService.instance?.requestVoiceWake("멈춰")
+            return true
+        }
         val command = candidates.firstNotNullOfOrNull(WakeWordMatcher::commandAfterWakeWord)
         return when {
             command != null -> {
@@ -215,11 +223,13 @@ class WakeWordService : Service(), RecognitionListener {
         } else {
             notifyStatus(getString(R.string.wake_word_accessibility_required))
         }
-        mainHandler.postDelayed({ resumeListening() }, COMMAND_FAILSAFE_MILLIS)
+        mainHandler.postDelayed({ if (pausedForCommand && !controlOnly) resumeListening() }, COMMAND_FAILSAFE_MILLIS)
     }
 
     private fun resumeListening() {
         if (destroyed) return
+        if (controlOnly) releaseRecognizer()
+        controlOnly = false
         pausedForCommand = false
         notifyStatus(getString(R.string.wake_word_notification_listening))
         if (offlineModel != null) {
@@ -235,6 +245,16 @@ class WakeWordService : Service(), RecognitionListener {
         mainHandler.removeCallbacks(startListeningRunnable)
         releaseRecognizer()
         notifyStatus(getString(R.string.wake_word_notification_detected))
+    }
+
+    private fun listenForControl() {
+        if (destroyed || controlOnly && !pausedForCommand) return
+        releaseRecognizer()
+        controlOnly = true
+        pausedForCommand = false
+        notifyStatus("작업 중 · ‘손주야 멈춰’라고 말하면 중단해요")
+        if (offlineModel != null) startOfflineListening()
+        else if (!offlineModelLoading) initializeOfflineModel()
     }
 
     private fun releaseRecognizer() {
@@ -294,7 +314,8 @@ class WakeWordService : Service(), RecognitionListener {
         runCatching {
             // A wake-word listener is a closed-vocabulary problem. Restricting the decoder keeps
             // short Korean vocatives from being swallowed by the full dictation language model.
-            val offlineRecognizer = Recognizer(model, OFFLINE_SAMPLE_RATE, OFFLINE_WAKE_GRAMMAR)
+            val offlineRecognizer = Recognizer(model, OFFLINE_SAMPLE_RATE,
+                if (controlOnly) OFFLINE_CONTROL_GRAMMAR else OFFLINE_WAKE_GRAMMAR)
             offlineSpeechService = SpeechService(offlineRecognizer, OFFLINE_SAMPLE_RATE).also {
                 it.startListening(offlineRecognitionListener)
             }
@@ -336,7 +357,12 @@ class WakeWordService : Service(), RecognitionListener {
     private fun handleOfflineHypothesis(hypothesis: String?, field: String) {
         if (destroyed || pausedForCommand || hypothesis.isNullOrBlank()) return
         val text = runCatching { JSONObject(hypothesis).optString(field) }.getOrNull().orEmpty()
-        if (WakeWordMatcher.matches(text)) onWakeWordDetected(command = null)
+        if (controlOnly) {
+            if (VoiceControl.isStopRequest(text)) {
+                pauseListening()
+                SonjuAccessibilityService.instance?.requestVoiceWake("멈춰")
+            }
+        } else if (WakeWordMatcher.matches(text)) onWakeWordDetected(command = null)
     }
 
     override fun onReadyForSpeech(params: Bundle?) = Unit
@@ -373,6 +399,7 @@ class WakeWordService : Service(), RecognitionListener {
     }
 
     override fun onPartialResults(partialResults: Bundle?) {
+        if (controlOnly) return
         val candidates = partialResults
             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             .orEmpty()
@@ -388,6 +415,7 @@ class WakeWordService : Service(), RecognitionListener {
         const val ACTION_STOP = "com.hwanghj09.sonju.action.STOP_WAKE_WORD"
         const val ACTION_PAUSE = "com.hwanghj09.sonju.action.PAUSE_WAKE_WORD"
         const val ACTION_RESUME = "com.hwanghj09.sonju.action.RESUME_WAKE_WORD"
+        const val ACTION_CONTROL = "com.hwanghj09.sonju.action.LISTEN_FOR_CONTROL"
         private const val CHANNEL_ID = "sonju_wake_word"
         private const val NOTIFICATION_ID = 2001
         private const val START_DELAY_MILLIS = 400L
@@ -404,6 +432,8 @@ class WakeWordService : Service(), RecognitionListener {
         private const val OFFLINE_SAMPLE_RATE = 16_000.0f
         private const val OFFLINE_WAKE_GRAMMAR =
             "[\"손주야\",\"손 주 야\",\"손주아\",\"선주야\",\"선 주 야\",\"손쥬야\",\"[unk]\"]"
+        private const val OFFLINE_CONTROL_GRAMMAR =
+            "[\"손주야 멈춰\",\"손 주 야 멈춰\",\"손주야 그만해\",\"선주야 멈춰\",\"그만해\",\"멈춰\",\"취소해\",\"[unk]\"]"
         @Volatile
         var running: Boolean = false
             private set

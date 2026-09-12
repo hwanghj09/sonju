@@ -4,6 +4,23 @@ import java.text.Normalizer
 
 /** Deterministic, uniqueness-preserving selector resolution for live accessibility nodes. */
 object UiTargetResolver {
+    /** Editors can move into a new wrapper when the keyboard opens. Keep their actual identity. */
+    fun rebindEditable(before: UiSnapshot, after: UiSnapshot, path: String?): UiElement? {
+        if (before.packageName != after.packageName || before.windowId != after.windowId) return null
+        fun editors(snapshot: UiSnapshot) = snapshot.elements.filter {
+            it.visible && it.enabled && it.editable && !it.sensitive
+        }
+        val previous = editors(before).singleOrNull { it.path == path } ?: return null
+        val candidates = editors(after).filter { it.className == previous.className &&
+            it.hintText == previous.hintText && it.contentDescription == previous.contentDescription }
+        val id = previous.viewId?.takeIf(String::isNotBlank)
+        if (id != null && editors(before).count { it.viewId == id } == 1) {
+            return candidates.singleOrNull { it.viewId == id }
+        }
+        return candidates.singleOrNull { it.path == path && it.viewId == previous.viewId &&
+            it.hintText == previous.hintText && it.contentDescription == previous.contentDescription }
+    }
+
     fun resolveClickable(action: AgentAction, snapshot: UiSnapshot): ResolvedClick? {
         if (action.type != ActionType.CLICK) return null
         val target = action.target.orEmpty()

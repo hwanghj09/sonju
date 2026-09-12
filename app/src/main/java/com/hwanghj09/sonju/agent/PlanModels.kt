@@ -7,6 +7,9 @@ import java.security.MessageDigest
 
 enum class ActionType {
     OPEN_APP,
+    OPEN_URL,
+    /** Human checkpoint; never dispatched by the accessibility executor. */
+    WAIT_FOR_USER,
     OPEN_WIFI_SETTINGS,
     OPEN_SOUND_SETTINGS,
     OPEN_ACCESSIBILITY_SETTINGS,
@@ -15,6 +18,7 @@ enum class ActionType {
     OPEN_CAMERA,
     OPEN_DIALER,
     OPEN_MESSAGES,
+    START_TIMER,
     CLICK,
     CLICK_COORDINATE,
     SET_TEXT,
@@ -116,7 +120,7 @@ data class UiElement(
     val availableActions: Set<UiNodeAction> = emptySet(),
 ) {
     fun compactLine(): String {
-        val safeText = if (sensitive) "[민감정보 가림]" else text.orEmpty().take(80)
+        val safeText = if (sensitive) "[민감정보 가림]" else text.orEmpty().take(if (editable) 4_000 else 80)
         val safeDescription = if (sensitive) "" else contentDescription.orEmpty().take(80)
         return buildString {
             append("path=").append(path)
@@ -164,6 +168,10 @@ data class UiSnapshot(
     val treeTruncated: Boolean = false,
     val trustedSettingsRoute: TrustedSettingsRoute? = null,
     val windowBounds: ScreenBounds? = null,
+    /** On-device OCR for read-only page evidence. Never exposed as executable nodes or persisted. */
+    val localReadOnlyText: List<String> = emptyList(),
+    /** Local category only, detected before credential text is redacted. */
+    val userIntervention: UserIntervention.Kind? = null,
 ) {
     fun hasSemanticSignal(): Boolean =
         elements.count { element ->
@@ -261,6 +269,16 @@ data class UiSnapshot(
             copy(trustedSettingsRoute = null).screenFingerprint() ==
             other.copy(trustedSettingsRoute = null).screenFingerprint()
 
+    /** Layout animations and focus do not change any displayed value or control identity. */
+    fun hasSameContentIgnoringLayoutAs(other: UiSnapshot): Boolean {
+        fun content(snapshot: UiSnapshot) = snapshot.copy(
+            windowBounds = null,
+            elements = snapshot.elements.map { it.copy(bounds = ScreenBounds(0, 0, 0, 0),
+                focused = false, accessibilityFocused = false) },
+        )
+        return content(this).hasSameObservableContentAs(content(other))
+    }
+
     /**
      * Exact executable revision used at the final action sink. [epoch] is a monotonic revision of
      * non-Sonju application accessibility events; the service deliberately excludes its own
@@ -316,7 +334,8 @@ data class UiSnapshot(
         } == 1 && other.elements.count {
             it.editable && it.enabled && it.visible && !it.sensitive
         } == 1
-        return expected.className == live.className && expected.bounds == live.bounds &&
+        return expected.className == live.className &&
+            (expected.bounds == live.bounds || hasSameContentIgnoringLayoutAs(other)) &&
             expected.text == live.text && (strongIdentity || uniqueFallback)
     }
 
@@ -377,7 +396,43 @@ data class AgentPlan(
     val skillVersion: Int? = null,
     /** Locally learned semantic postcondition; never supplied by a remote planner. */
     val expectedScreenFingerprint: String? = null,
+    /** Current-screen evidence proposed by the model, checked locally before accepting completion. */
+    val goalChecks: List<GoalCheck> = emptyList(),
+    /** Exact image digest, assigned by local capture code; pixels are never stored in skills. */
+    val visualFrameHash: String? = null,
+    val visualFrameVerified: Boolean = false,
 )
+
+data class GoalCheck(val selector: String, val text: String? = null, val checked: Boolean? = null) {
+    fun matches(snapshot: UiSnapshot): Boolean {
+        val node = resolveNode(snapshot) ?: return false
+        return (text == null || listOfNotNull(node.text, node.contentDescription, node.stateDescription)
+            .any { normalizeGoalText(it) == normalizeGoalText(text) }) &&
+            (checked == null || node.checkable && node.checked == checked)
+    }
+
+    fun resolveNode(snapshot: UiSnapshot): UiElement? {
+        if (selector.isBlank()) return null
+        val value = selector.substringAfter('=', selector)
+        val field = selector.substringBefore('=', "")
+        return snapshot.elements.filter { it.visible && !it.sensitive &&
+            when (field) {
+                "path" -> value == it.path
+                "id" -> value == it.viewId
+                "text" -> it.text?.let(::normalizeGoalText) == normalizeGoalText(value)
+                "desc" -> it.contentDescription?.let(::normalizeGoalText) == normalizeGoalText(value)
+                "hint" -> it.hintText?.let(::normalizeGoalText) == normalizeGoalText(value)
+                else -> selector in listOf(it.path, it.viewId) ||
+                    listOfNotNull(it.text, it.contentDescription, it.hintText)
+                        .any { label -> normalizeGoalText(label) == normalizeGoalText(selector) }
+            }
+        }.singleOrNull()
+    }
+}
+
+/** Ignore invisible formatting and collapsed whitespace, while preserving every value and symbol. */
+fun normalizeGoalText(value: String): String = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC)
+    .replace(Regex("\\p{Cf}"), "").replace(Regex("\\s+"), " ").trim()
 
 enum class SafetyDecision {
     ALLOW,
@@ -401,9 +456,16 @@ data class ExecutionResult(
     val afterFingerprint: String? = null,
     val postconditionSatisfied: Boolean? = null,
     val goalVerified: Boolean = false,
+    val afterVisualFrameHash: String? = null,
 )
 
+fun visualFrameHash(jpegBase64: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(jpegBase64.toByteArray(Charsets.US_ASCII))
+    .joinToString("") { "%02x".format(it) }
+
 fun ActionType.displayName(): String = when (this) {
+    ActionType.OPEN_URL -> "공식 웹페이지 열기"
+    ActionType.WAIT_FOR_USER -> "사용자 확인 기다리기"
     ActionType.OPEN_APP -> "앱 열기"
     ActionType.OPEN_WIFI_SETTINGS -> "와이파이 설정 열기"
     ActionType.OPEN_SOUND_SETTINGS -> "소리 설정 열기"
@@ -413,6 +475,7 @@ fun ActionType.displayName(): String = when (this) {
     ActionType.OPEN_CAMERA -> "카메라 열기"
     ActionType.OPEN_DIALER -> "전화 화면 열기"
     ActionType.OPEN_MESSAGES -> "문자 화면 열기"
+    ActionType.START_TIMER -> "타이머 시작"
     ActionType.CLICK -> "버튼 누르기"
     ActionType.CLICK_COORDINATE -> "화면 좌표 누르기"
     ActionType.SET_TEXT -> "글자 입력하기"

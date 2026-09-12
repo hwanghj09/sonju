@@ -8,6 +8,21 @@ import kotlin.math.abs
  * The handoff never carries live AccessibilityNodeInfo objects.
  */
 object ScreenContextHandoff {
+    /** Single-character keypad and symbol labels are meaningful exact matches too. */
+    fun labelsCompatible(expected: List<String>, live: List<String>): Boolean {
+        if (expected.isEmpty()) return true
+        fun normalized(values: List<String>) = values.map {
+            Normalizer.normalize(it, Normalizer.Form.NFKC).trim().lowercase()
+        }.filter(String::isNotEmpty).toSet()
+        val expectedLabels = normalized(expected)
+        val liveLabels = normalized(live)
+        if (expectedLabels.intersect(liveLabels).isNotEmpty()) return true
+        fun tokens(labels: Set<String>) = labels.flatMap {
+            it.split(Regex("[^\\p{L}\\p{Nd}]+"))
+        }.filter { it.length >= 2 }.toSet()
+        return tokens(expectedLabels).intersect(tokens(liveLabels)).isNotEmpty()
+    }
+
     fun shouldRetryCapture(
         snapshot: UiSnapshot?,
         captureEpoch: Long,
@@ -43,8 +58,35 @@ object ScreenContextHandoff {
             element.tooltipText,
         ).filterNotNull().map(::compact)
         simpleClass.contains("progressbar") || simpleClass.contains("spinner") ||
-            LOADING_ID_TERMS.any(compactId::contains) ||
+            !simpleClass.endsWith("layout") && !simpleClass.endsWith("group") &&
+                LOADING_ID_TERMS.any(compactId::contains) ||
             compactLabels.any { label -> LOADING_LABEL_TERMS.any(label::contains) }
+    }
+
+    /** A renderer can expose only native toolbars, without exposing the content it draws. */
+    fun hasUnobservedRenderedContent(snapshot: UiSnapshot): Boolean = unobservedRenderedSurfaces(snapshot).isNotEmpty()
+
+    fun unobservedRenderedSurfaces(snapshot: UiSnapshot): List<UiElement> {
+        val window = snapshot.windowBounds ?: return emptyList()
+        val windowArea = (window.right - window.left).toLong() * (window.bottom - window.top)
+        if (windowArea <= 0) return emptyList()
+        return snapshot.elements.filter { surface ->
+            if (!surface.visible || !surface.enabled || surface.sensitive ||
+                listOf("SurfaceView", "TextureView", "WebView").none(surface.className::endsWith)) return@filter false
+            val bounds = surface.bounds
+            val height = bounds.bottom - bounds.top
+            if (bounds.left < window.left || bounds.right > window.right || bounds.top < window.top ||
+                bounds.bottom > window.bottom ||
+                (bounds.right - bounds.left).toLong() * height < windowArea / 4) return@filter false
+            // Browser chrome around the edges is not evidence that the page body was read.
+            val top = bounds.top + height * 15 / 100
+            val bottom = bounds.bottom - height * 15 / 100
+            snapshot.elements.none { node ->
+                node !== surface && node.visible && !node.sensitive &&
+                    node.bounds.centerX in bounds.left..bounds.right && node.bounds.centerY in top..bottom &&
+                    listOfNotNull(node.text, node.contentDescription, node.hintText).any(String::isNotBlank)
+            }
+        }
     }
 
     fun isReusable(
@@ -167,7 +209,8 @@ object ScreenContextHandoff {
 
     /**
      * Dynamic lists may insert nodes without changing the visible control. Rebind a click only
-     * when one live clickable surface keeps the same class, geometry, and descendant semantics.
+     * when one live clickable surface keeps the same class and descendant semantics. A layout
+     * animation may move it farther only if every observed content/state value stays unchanged.
      */
     fun relocateClickTarget(
         expected: UiSnapshot,
@@ -184,17 +227,23 @@ object ScreenContextHandoff {
         val expectedLabels = descendantLabels(expected, target.path)
         val expectedViewId = target.viewId?.takeIf(String::isNotBlank)
         if (expectedLabels.isEmpty() && expectedViewId == null) return null
+        val onlyLayoutChanged by lazy { expected.hasSameContentIgnoringLayoutAs(live) }
 
         return live.elements.asSequence()
             .filter { element ->
                 element.visible && element.enabled && !element.sensitive &&
                     (element.clickable || UiNodeAction.CLICK in element.availableActions) &&
-                    element.className == target.className && boundsRemainCompatible(target, element)
+                    element.className == target.className && element.checkable == target.checkable &&
+                    (!target.checkable || element.checked == target.checked)
             }
             .filter { candidate ->
                 val sameResource = expectedViewId != null && candidate.viewId == expectedViewId
                 val liveLabels = descendantLabels(live, candidate.path)
-                sameResource || expectedLabels.intersect(liveLabels).isNotEmpty()
+                val sameMeaning = if (expectedLabels.isEmpty()) sameResource
+                    else expectedLabels.intersect(liveLabels).isNotEmpty()
+                sameMeaning && (boundsRemainCompatible(target, candidate) ||
+                    expectedLabels == liveLabels && (expectedLabels.isNotEmpty() || sameResource) &&
+                        onlyLayoutChanged)
             }
             .map(UiElement::path)
             .distinct()

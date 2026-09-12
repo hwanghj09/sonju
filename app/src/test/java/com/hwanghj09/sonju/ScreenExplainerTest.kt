@@ -10,6 +10,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScreenExplainerTest {
+    @Test fun informationRequestsDoNotTurnIntoScreenHelpBecauseTheySayTellMe() {
+        for (request in listOf("아산병원 예약기록 알려줘", "분당서울대병원 예약 내역 확인해줘", "내일 날씨 알려줘",
+            "카카오톡에서 안 읽은 메시지 알려줘", "이번 주 일정 알려줘", "택배 언제 오는지 알려줘",
+            "삼성전자 주가 알려줘", "지금 환율이 얼마야?", "서울역 가는 길 알려줘", "이 화면에서 내 예약 기록 알려줘",
+            "조회 방법을 검색해서 알려줘", "사용법 검색해줘", "사용법 찾아줘",
+            "아산병원 예약해 둔 내역 알려줘", "여기서 이번 주 일정 확인해서 알려줘",
+            "카카오톡 열어서 새 메시지 알려줘", "버스 언제 도착해?", "예약 내역 좀 보여줄래?")) {
+            assertEquals(request, ScreenExplainer.RequestKind.COMMAND, ScreenExplainer.classifyRequest(request))
+        }
+        for (request in listOf("현재 화면 내용 알려줘", "이 메시지 내용을 읽어줘", "이 화면에서 검색 어떻게 해?",
+            "예약 조회 방법 알려줘", "검색 버튼이 어디야?")) {
+            assertEquals(request, ScreenExplainer.RequestKind.QUESTION, ScreenExplainer.classifyRequest(request))
+        }
+    }
+
     @Test
     fun recognizesNaturalKoreanExplanationRequests() {
         assertTrue(ScreenExplainer.isExplanationRequest("이거 어떻게 사용하는 앱이야?"))

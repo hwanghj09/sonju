@@ -80,7 +80,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var resultText: TextView
     private var competingControls: List<View> = emptyList()
 
-    private val openAiPlanner = OpenAiPlanner()
+    private val openAiPlanner = OpenAiPlanner(installedApps = {
+        com.hwanghj09.sonju.agent.InstalledApps.query(packageManager)
+    })
     private val architectureRuntime by lazy { SonjuAgentRuntime.get(this) }
     private lateinit var learnedRouteMemory: LearnedRouteMemory
     private var autonomySession: AutonomySession? = null
@@ -221,6 +223,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         requestGeneration += 1
+        automaticCommandRunnable?.let(contextExpiryHandler::removeCallbacks)
+        automaticCommandRunnable = null
         awaitingVoiceRecognition = false
         clearOverlayContext()
         openAiPlanner.close()
@@ -338,6 +342,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             SonjuAccessibilityService.EXTRA_FROM_OVERLAY,
             false,
         )
+        if (BuildConfig.DEBUG) android.util.Log.d("SonjuFlow", "command received direct=${directVoiceCommand != null} overlay=$requestedFromOverlay")
         if (!requestedFromOverlay) {
             if (busy || confirmationDialog != null) {
                 requestGeneration += 1
@@ -348,7 +353,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
             clearOverlayContext()
             when {
-                directVoiceCommand != null -> scheduleAutomaticCommand(directVoiceCommand)
+                directVoiceCommand != null -> scheduleAccessibilityCommand(directVoiceCommand)
                 autoStartVoice -> scheduleAutomaticVoiceInput()
             }
             return
@@ -395,7 +400,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun scheduleAutomaticCommand(command: String) {
-        automaticCommandRunnable?.let(commandInput::removeCallbacks)
+        automaticCommandRunnable?.let(contextExpiryHandler::removeCallbacks)
         val runnable = Runnable {
             automaticCommandRunnable = null
             val safeCommand = command.take(500)
@@ -406,7 +411,35 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             handleCommand()
         }
         automaticCommandRunnable = runnable
-        commandInput.post(runnable)
+        contextExpiryHandler.post(runnable)
+    }
+
+    /** Keep externally supplied voice commands on the same observe/replan executor as wake words. */
+    private fun scheduleAccessibilityCommand(command: String) {
+        automaticCommandRunnable?.let(contextExpiryHandler::removeCallbacks)
+        val startedAt = SystemClock.elapsedRealtime()
+        val generation = requestGeneration
+        val runnable = object : Runnable {
+            override fun run() {
+                if (generation != requestGeneration || isFinishing || isDestroyed) return
+                val service = SonjuAccessibilityService.instance
+                val enabled = isServiceEnabledInSettings()
+                if (BuildConfig.DEBUG) android.util.Log.d("SonjuFlow", "command dispatch connected=${service != null} enabled=$enabled")
+                if (enabled && service == null && SystemClock.elapsedRealtime() - startedAt < 5_000) {
+                    contextExpiryHandler.postDelayed(this, 250)
+                    return
+                }
+                automaticCommandRunnable = null
+                if (service == null || !enabled) {
+                    scheduleAutomaticCommand(command)
+                    return
+                }
+                service.requestVoiceWake(command)
+                finish()
+            }
+        }
+        automaticCommandRunnable = runnable
+        contextExpiryHandler.post(runnable)
     }
 
     private fun updateServiceStatus() {
@@ -610,6 +643,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun handleCommand() {
         if (busy) return
+        val requestedCommand = commandInput.text?.toString()?.trim().orEmpty()
+        if (requestedCommand.isNotBlank() && !ScreenExplainer.isExplanationRequest(requestedCommand)) {
+            if (SonjuAccessibilityService.instance == null || !isServiceEnabledInSettings()) {
+                finishBusyWithMessage(getString(R.string.accessibility_required), success = false)
+                return
+            }
+            hideKeyboard()
+            requestGeneration++
+            openAiPlanner.cancelPending()
+            clearOverlayContext()
+            scheduleAccessibilityCommand(requestedCommand)
+            return
+        }
         attachRecentApplicationContext()
         if (fromOverlay && !ContextLifetime.isFresh(
                 SystemClock.elapsedRealtime(),
@@ -673,6 +719,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
+        if (com.hwanghj09.sonju.agent.UserIntervention.required(snapshot, command) != null) {
+            val service = SonjuAccessibilityService.instance
+            if (service != null) {
+                service.continueAutonomousCommand(command, session)
+                autonomySession = null
+            }
+            finishBusyWithMessage("현재 앱에서 직접 확인을 마치면 손주가 요청을 이어갑니다.", success = false)
+            if (service != null) moveTaskToBack(true)
+            return
+        }
         val baeminPlan = BaeminOrderLocalPlanner.plan(command, snapshot)
         if (baeminPlan != null) {
             showProgress(getString(R.string.progress_check))
@@ -680,9 +736,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        val appWorkflowRoute = SonjuAccessibilityService.instance
-            ?.resolveAppWorkflowRoute(command)
-            ?: AppWorkflowRouter.route(command)
+        val planningService = SonjuAccessibilityService.instance
+        val appWorkflowRoute = if (planningService != null) planningService.resolveAppWorkflowRoute(command)
+            else if (RuleBasedPlanner.plan(command, snapshot) == null) AppWorkflowRouter.route(command) else null
         val appEntryPlan = appWorkflowRoute?.let { route ->
             AppWorkflowRouter.entryPlan(
                 command = command,
@@ -698,12 +754,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        val fastPathPlan = architectureRuntime.fastPathPlan(command, snapshot)
-        if (fastPathPlan != null) {
-            showProgress(getString(R.string.progress_check))
-            handlePlan(command, snapshot, fastPathPlan)
-            return
-        }
         val inAppPlan = appWorkflowRoute?.let { route ->
             AppWorkflowRouter.inAppPlan(
                 command,
@@ -715,6 +765,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (inAppPlan != null) {
             showProgress(getString(R.string.progress_check))
             handlePlan(command, snapshot, inAppPlan)
+            return
+        }
+        val fastPathPlan = architectureRuntime.fastPathPlan(command, snapshot, session)
+        if (fastPathPlan != null) {
+            showProgress(getString(R.string.progress_check))
+            handlePlan(command, snapshot, fastPathPlan)
             return
         }
         val localPlan = if (appWorkflowRoute == null) {

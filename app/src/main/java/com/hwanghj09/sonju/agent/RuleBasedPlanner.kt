@@ -67,6 +67,7 @@ object RuleBasedPlanner {
     fun plan(command: String, snapshot: UiSnapshot? = null): AgentPlan? {
         val normalized = command.trim().lowercase().replace(Regex("\\s+"), " ")
         if (normalized.isBlank() || SafetyPolicy.isExplicitNegation(normalized)) return null
+        TimerRequest.parse(command)?.let { return planFor(command, it.action()) }
         if (AppWorkflowRouter.route(command) != null) return null
         planTrustedToggle(normalized, snapshot)?.let { return planFor(command, it) }
         val body = commandBody(normalized) ?: return null
@@ -251,8 +252,10 @@ object RuleBasedPlanner {
             ?: Regex("^open\\s+(.{1,40})$", RegexOption.IGNORE_CASE)
                 .matchEntire(body)?.groupValues?.get(1)
             ?: return null
-        return target.trim()
-            .takeIf { it.isNotBlank() && compact(it) !in NON_APP_TARGETS }
+        return target.trim().takeIf {
+            it.isNotBlank() && compact(it) !in NON_APP_TARGETS &&
+                !APP_INTERNAL_COMMAND_MARKER.containsMatchIn(it)
+        }
     }
 
     private fun String.matchesAny(vararg patterns: String): Boolean =
@@ -261,6 +264,7 @@ object RuleBasedPlanner {
     private val NON_APP_TARGETS = setOf(
         "앱", "화면", "설정", "버튼", "링크", "메뉴", "파일", "문서", "사진", "영상",
     ).map(::compact).toSet()
+    private val APP_INTERNAL_COMMAND_MARKER = Regex("(?:에서|으로|로)\\s+")
     private val ORDER_VERBS = setOf("시켜", "주문")
 }
 
@@ -296,7 +300,8 @@ object AppWorkflowRouter {
         command: String,
         installedAppLabels: Collection<String> = emptyList(),
     ): AppWorkflowRoute? {
-        val intent = DeterministicTaskParser.parse(command)
+        val intent = DeterministicTaskParser.parse(command,
+            installedAppLabels.takeIf { it.isNotEmpty() })
         val normalizedCommand = normalize(command)
         val explicitApp = intent.targetApp ?: installedAppPrefix(command, installedAppLabels)
         if (explicitApp == null) {
@@ -312,7 +317,9 @@ object AppWorkflowRouter {
         }
         val appLabel = explicitApp ?: installedAppMention(command, installedAppLabels) ?: return null
         val normalizedApp = normalize(appLabel)
-        if (normalize(appLabel).split(' ').any { compact(it) in NON_APP_TARGET_TERMS }) return null
+        if (normalize(appLabel).split(' ').any { compact(it) in NON_APP_TARGET_TERMS } &&
+            compact(appLabel) !in BUILT_IN_WORKFLOW_APPS
+        ) return null
         val commandWithoutPossessive = normalizedCommand.removePrefix("내 ")
         if (!commandWithoutPossessive.startsWith(normalizedApp)) return null
         val targetSurface = commandWithoutPossessive.removePrefix(normalizedApp)
@@ -365,7 +372,7 @@ object AppWorkflowRouter {
         snapshot: UiSnapshot,
         successfulActions: List<AgentAction> = emptyList(),
     ): AgentPlan? {
-        val intent = DeterministicTaskParser.parse(command)
+        val intent = DeterministicTaskParser.parse(command, listOf(route.appLabel))
         val compactTarget = compact(route.targetSurface)
         val appSpecificTarget = when {
             snapshot.packageName == "com.samsung.android.app.notes" &&
@@ -381,7 +388,7 @@ object AppWorkflowRouter {
 
             else -> null
         }
-        val decision = interruptionDecision(command, snapshot)
+        val candidateDecision = interruptionDecision(command, snapshot)
             ?: profileDecision(command, route, snapshot)
             ?: messageDecision(intent, snapshot, successfulActions)
             ?: directionsDecision(intent, snapshot)
@@ -395,9 +402,28 @@ object AppWorkflowRouter {
                 ),
                 reason = "검증된 앱 adapter의 구조화된 빠른 경로",
             )
-        } ?: genericSearchDecision(command, route, snapshot)
+        } ?: genericSearchDecision(command, route, snapshot, successfulActions)
             ?: genericMenuDecision(command, route, snapshot)
             ?: return null
+        val decision = if (
+            ScreenContextHandoff.hasVisibleLoadingIndicator(snapshot) &&
+            !candidateDecision.goalCompleted &&
+            candidateDecision.action?.let { action ->
+                action.type == ActionType.BACK ||
+                    action.type == ActionType.CLICK && action.target.isNullOrBlank()
+            } == true
+        ) {
+            WorkflowDecision(
+                action = AgentAction(
+                    ActionType.WAIT,
+                    "화면의 목표 control이 로딩될 때까지 잠시 기다립니다.",
+                    waitMillis = 800,
+                ),
+                reason = "로딩 중에는 target 없는 클릭이나 뒤로가기를 실행하지 않음",
+            )
+        } else {
+            candidateDecision
+        }
         val action = decision.action
         val actions = if (decision.goalCompleted) {
             listOf(AgentAction(ActionType.FINISH, "요청한 결과 화면을 확인했습니다."))
@@ -545,18 +571,20 @@ object AppWorkflowRouter {
             )
         }
         ownProfileDecision?.let { return it }
-        val profileEntryPaths = snapshot.elements.asSequence()
+        val profileEntryElements = snapshot.elements.asSequence()
             .filter { it.visible && it.enabled && !it.sensitive }
             .filter { element ->
                 labels(element).any { label ->
                     compact(label).let { it.contains("친구탭") || it.contains("friendstab") }
                 }
             }
+            .toList()
+        val profileEntryPaths = profileEntryElements.asSequence()
             .mapNotNull { clickablePath(snapshot, it) }
             .distinct()
             .toList()
-        return profileEntryPaths.singleOrNull()?.let { path ->
-            WorkflowDecision(
+        profileEntryPaths.singleOrNull()?.let { path ->
+            return WorkflowDecision(
                 action = AgentAction(
                     ActionType.CLICK,
                     "내 프로필이 있는 탭을 엽니다.",
@@ -565,6 +593,25 @@ object AppWorkflowRouter {
                 reason = "현재 앱의 프로필 진입 탭을 semantic 정보로 식별",
             )
         }
+        if (profileEntryElements.isNotEmpty()) {
+            return WorkflowDecision(
+                action = AgentAction(
+                    ActionType.WAIT,
+                    "프로필 진입 탭이 조작 가능한 상태가 될 때까지 잠시 기다립니다.",
+                    waitMillis = 800,
+                ),
+                reason = "앱 홈 탭은 보이지만 프로필 진입 control이 아직 로딩 중",
+            )
+        }
+        messageBackDecision(snapshot)?.let { back ->
+            return back.copy(
+                action = back.action?.copy(
+                    description = "내 프로필 진입 화면이 있는 이전 화면으로 돌아갑니다.",
+                ),
+                reason = "현재 중첩 화면의 유일한 이전 control로 프로필 탐색을 계속함",
+            )
+        }
+        return null
     }
 
     private fun messageDecision(
@@ -974,6 +1021,29 @@ object AppWorkflowRouter {
             )
         }
 
+        val awaitingMerchantDetail = successfulActions.lastOrNull()?.let { action ->
+            action.type == ActionType.CLICK &&
+                compact(action.description).contains("식당을선택")
+        } == true
+        val merchantContentVisible = merchantDetailVisible || menuVisible ||
+            visibleLabels.any { label ->
+                POPULAR_MENU_SECTION_TERMS.any(label::contains) ||
+                    MENU_SEARCH_SECTION_TERMS.any(label::contains) ||
+                    CART_VIEW_TERMS.any(label::contains) ||
+                    ADD_TO_CART_TERMS.any(label::contains)
+            }
+        if (awaitingMerchantDetail && !merchantContentVisible) {
+            return WorkflowDecision(
+                action = AgentAction(
+                    ActionType.WAIT,
+                    "선택한 식당의 상세 내용이 로딩될 때까지 잠시 기다립니다.",
+                    waitMillis = 800,
+                ),
+                reason = "식당 선택 전환은 확인됐지만 메뉴나 영업 정보가 아직 나타나지 않음",
+            )
+        }
+
+        val cartVisible = visibleLabels.any { label -> CART_SCREEN_TERMS.any(label::contains) }
         if (verifiedMenuAdded) {
             surfaces.singleMatching(CART_VIEW_TERMS)?.let { cart ->
                 return WorkflowDecision(
@@ -985,9 +1055,23 @@ object AppWorkflowRouter {
                     reason = "현재 실행에서 요청 메뉴를 담은 뒤 유일한 장바구니 보기 control을 식별",
                 )
             }
+            val staleMenuVisible = menuVisible || visibleLabels.any { label ->
+                POPULAR_MENU_SECTION_TERMS.any(label::contains) ||
+                    MENU_SEARCH_SECTION_TERMS.any(label::contains) ||
+                    ADD_TO_CART_TERMS.any(label::contains)
+            }
+            if (!cartVisible && staleMenuVisible) {
+                return WorkflowDecision(
+                    action = AgentAction(
+                        ActionType.WAIT,
+                        "담은 메뉴가 반영되고 장바구니 화면으로 이동할 수 있을 때까지 잠시 기다립니다.",
+                        waitMillis = 800,
+                    ),
+                    reason = "현재 실행에서 메뉴 담기를 이미 확인했으므로 다른 메뉴를 다시 선택하지 않음",
+                )
+            }
         }
 
-        val cartVisible = visibleLabels.any { label -> CART_SCREEN_TERMS.any(label::contains) }
         val emptyCartVisible = visibleLabels.any { label -> EMPTY_CART_TERMS.any(label::contains) }
         if (cartVisible && emptyCartVisible) {
             return WorkflowDecision(
@@ -1118,11 +1202,22 @@ object AppWorkflowRouter {
                     POPULAR_SORT_TERMS.any(compact(label)::contains)
                 }
             }
+        val unavailableRestaurantPaths = successfulActions.windowed(2).mapNotNull { actions ->
+            val selection = actions[0]
+            val recovery = actions[1]
+            selection.target?.takeIf {
+                selection.type == ActionType.CLICK &&
+                    compact(selection.description).contains("식당을선택") &&
+                    recovery.type == ActionType.BACK &&
+                    compact(recovery.description).contains("주문할수없는식당")
+            }
+        }.toSet()
         val restaurantCandidates = surfaces.filter { surface ->
             val combined = surface.labels.joinToString(" ")
             val metadataCount = RESTAURANT_CARD_EVIDENCE.count(combined::contains)
             val matchesRequestedKind = combined.contains(compact(restaurantQuery))
-            (matchesRequestedKind || metadataCount >= 2) &&
+            surface.path !in unavailableRestaurantPaths &&
+                (matchesRequestedKind || metadataCount >= 2) &&
                 surface.labels.none { label ->
                     FOOD_CONTROL_EXCLUSIONS.any(label::contains) ||
                         isAdvertisementLabel(label) || isUnavailableMerchantLabel(label)
@@ -1170,8 +1265,9 @@ object AppWorkflowRouter {
         command: String,
         route: AppWorkflowRoute,
         snapshot: UiSnapshot,
+        successfulActions: List<AgentAction>,
     ): WorkflowDecision? {
-        val intent = DeterministicTaskParser.parse(command)
+        val intent = DeterministicTaskParser.parse(command, listOf(route.appLabel))
         val query = intent.entities["query"]
             ?.let { stripLeadingAppLabel(it, route.appLabel) }
             ?.takeIf(String::isNotBlank)
@@ -1249,6 +1345,7 @@ object AppWorkflowRouter {
                 it.field == "sort" || it.field == "restaurant_sort"
             }
             if (sortConstraint == null) {
+                if (orderWorkflow) return null
                 return WorkflowDecision(
                     goalCompleted = true,
                     reason = "검색어와 구조화된 결과 항목이 현재 화면에서 함께 확인됨",
@@ -1327,6 +1424,11 @@ object AppWorkflowRouter {
             }
             return null
         }
+        // After submission, an address editor shows the destination URL instead of the query.
+        // Read the result before choosing another action; never restart the same search locally.
+        if (successfulActions.any { it.type == ActionType.SUBMIT_TEXT && compact(it.value.orEmpty()) == compactQuery }) {
+            return null
+        }
         if (editable != null) {
             if (compact(editable.text.orEmpty()) != compactQuery) {
                 return WorkflowDecision(
@@ -1339,7 +1441,7 @@ object AppWorkflowRouter {
                     reason = "현재 화면의 유일한 검색 입력란을 로컬 semantic 정보로 식별",
                 )
             }
-            if (UiNodeAction.IME_ENTER in editable.availableActions) {
+            if (com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(editable)) {
                 return WorkflowDecision(
                     action = AgentAction(
                         type = ActionType.SUBMIT_TEXT,
@@ -1347,7 +1449,7 @@ object AppWorkflowRouter {
                         target = editable.path,
                         value = query,
                     ),
-                    reason = "검색 입력란이 제공한 IME 제출 동작으로 원문 검색어를 확정",
+                    reason = "관찰한 검색 또는 주소 입력란의 실제 편집기 동작으로 검색어를 확정",
                 )
             }
             val submitTargets = searchControls(snapshot)
@@ -1507,7 +1609,9 @@ object AppWorkflowRouter {
         }
     }
 
-    private fun isSearchElement(element: UiElement): Boolean = labels(element).any { value ->
+    private fun isSearchElement(element: UiElement): Boolean =
+        element.editable && com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(element) ||
+        labels(element).any { value ->
         val compactValue = compact(value)
         compactValue in SEARCH_CONTROL_TERMS ||
             SEARCH_CONTROL_TERMS.any { term ->
@@ -1669,10 +1773,10 @@ object AppWorkflowRouter {
     private val NON_APP_TARGET_TERMS = setOf(
         "화면", "설정", "버튼", "링크", "메뉴", "파일", "문서", "사진", "영상", "내용",
     ).map(::compact).toSet()
+    private val BUILT_IN_WORKFLOW_APPS = setOf("설정").map(::compact).toSet()
     private val TARGET_ACTION_SUFFIX = Regex(
-        "\\s*(?:열기|열어|열어줘|열어 주세요|들어가기|들어가|들어가줘|찾기|찾아|찾아줘|" +
-            "검색하기|검색해|검색해줘|선택하기|선택해|선택해줘|눌러|눌러줘|보여|보여줘)" +
-            "(?:\\s*(?:줘|주세요))?[.!?]?$",
+        "(?:\\s*(?:열기|열어|들어가기|들어가|찾기|찾아|검색하기|검색해|" +
+            "선택하기|선택해|눌러|보여)(?:\\s*(?:줘|주세요))?)+[.!?]?$",
         RegexOption.IGNORE_CASE,
     )
     private val TARGET_STOP_WORDS = setOf("가장", "제일", "최근", "있는", "항목", "메뉴")

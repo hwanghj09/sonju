@@ -98,6 +98,45 @@ class RuleBasedPlannerTest {
     }
 
     @Test
+    fun settingsMenuCommandSeparatesTheAppFromTheRequestedMenu() {
+        val command = "설정에서 배터리 메뉴를 찾아 열어줘"
+        val route = requireNotNull(AppWorkflowRouter.route(command, listOf("설정")))
+
+        assertEquals("설정", route.appLabel)
+        assertEquals("배터리 메뉴를 찾아 열어줘", route.targetSurface)
+        assertNull(RuleBasedPlanner.plan(command))
+
+        val entry = AppWorkflowRouter.entryPlan(
+            command,
+            route,
+            currentPackage = "com.sec.android.app.launcher",
+            targetPackage = "com.android.settings",
+        )
+        assertEquals(ActionType.OPEN_APP, entry?.actions?.first()?.type)
+        assertEquals("설정", entry?.actions?.first()?.target)
+
+        val openBattery = AppWorkflowRouter.inAppPlan(
+            command,
+            route,
+            snapshot().copy(
+                packageName = "com.android.settings",
+                windowTitle = "설정",
+                elements = listOf(element("0.battery", text = "배터리")),
+            ),
+        )
+        assertEquals(ActionType.CLICK, openBattery?.actions?.first()?.type)
+        assertEquals("0.battery", openBattery?.actions?.first()?.target)
+    }
+
+    @Test
+    fun nonAppWorkflowIsNotCollapsedIntoOneAppName() {
+        val command = "사진에서 고양이를 찾아 열어줘"
+
+        assertNull(AppWorkflowRouter.route(command))
+        assertNull(RuleBasedPlanner.plan(command))
+    }
+
+    @Test
     fun appInternalWorkflowOpensOnlyTheOwningAppBeforeInspectingItsScreen() {
         val command = "카톡 프로필 열어줘"
         val route = requireNotNull(AppWorkflowRouter.route(command))
@@ -242,7 +281,7 @@ class RuleBasedPlannerTest {
     @Test
     fun genericSearchAdvancesOneObservedSemanticActionAtATime() {
         val command = "동영상에서 클래식 음악 찾아줘"
-        val route = requireNotNull(AppWorkflowRouter.route(command))
+        val route = requireNotNull(AppWorkflowRouter.route(command, listOf("동영상")))
         val openSearch = AppWorkflowRouter.inAppPlan(
             command,
             route,
@@ -323,7 +362,8 @@ class RuleBasedPlannerTest {
                 ),
             ),
         )
-        assertEquals("0.submit", submitSearch?.actions?.first()?.target)
+        assertEquals(ActionType.SUBMIT_TEXT, submitSearch?.actions?.first()?.type)
+        assertEquals("0.query", submitSearch?.actions?.first()?.target)
 
         val completed = AppWorkflowRouter.inAppPlan(
             command,
@@ -458,6 +498,21 @@ class RuleBasedPlannerTest {
             com.hwanghj09.sonju.task.DeterministicTaskParser.parse(placeholderMessage)
                 .entities["recipient"],
         )
+        assertEquals(
+            "하영",
+            com.hwanghj09.sonju.task.DeterministicTaskParser
+                .parse("하영이한테 안녕이라고 보내줘")
+                .entities["recipient"],
+        )
+
+        val simpleOrder = "설렁탕 시켜줘"
+        val simpleOrderIntent = com.hwanghj09.sonju.task.DeterministicTaskParser.parse(simpleOrder)
+        assertEquals("설렁탕", simpleOrderIntent.entities["restaurant_query"])
+        assertEquals("설렁탕", simpleOrderIntent.entities["menu_query"])
+        assertEquals(
+            "배달의민족",
+            AppWorkflowRouter.route(simpleOrder, listOf("요기요", "배달의민족"))?.appLabel,
+        )
 
         val directions = "서울역 가는 길 알려줘"
         val directionsRoute = AppWorkflowRouter.route(
@@ -506,6 +561,27 @@ class RuleBasedPlannerTest {
             snapshot().copy(elements = listOf(element("0.title", text = "프로필 편집", clickable = false))),
         )
         assertEquals(true, editReached?.goalCompleted)
+        val leaveNestedProfileScreen = AppWorkflowRouter.inAppPlan(
+            profileCommand,
+            profileRoute,
+            snapshot().copy(
+                elements = listOf(
+                    element("0.back", contentDescription = "이전"),
+                    element("0.chat", hintText = "메시지 입력", editable = true),
+                ),
+            ),
+        )
+        assertEquals("0.back", leaveNestedProfileScreen?.actions?.first()?.target)
+        val waitForProfileHomeTab = AppWorkflowRouter.inAppPlan(
+            profileCommand,
+            profileRoute,
+            snapshot().copy(
+                elements = listOf(
+                    element("0.friends", contentDescription = "친구 탭", clickable = false),
+                ),
+            ),
+        )
+        assertEquals(ActionType.WAIT, waitForProfileHomeTab?.actions?.first()?.type)
 
         val messageCommand = "민수한테 조금 늦는다고 보내줘"
         val messageRoute = requireNotNull(
@@ -667,6 +743,51 @@ class RuleBasedPlannerTest {
             ),
         )
         assertEquals("0.minsu", openChat?.actions?.first()?.target)
+        val openColloquialRecipient = AppWorkflowRouter.inAppPlan(
+            "하영이한테 안녕이라고 보내줘",
+            requireNotNull(
+                AppWorkflowRouter.route(
+                    "하영이한테 안녕이라고 보내줘",
+                    listOf("카카오톡"),
+                ),
+            ),
+            snapshot().copy(
+                elements = listOf(
+                    element(
+                        "0.search",
+                        text = "하영",
+                        hintText = "검색",
+                        clickable = false,
+                        editable = true,
+                    ),
+                    element("0.hayoung", text = "하영"),
+                ),
+            ),
+        )
+        assertEquals("0.hayoung", openColloquialRecipient?.actions?.first()?.target)
+        val ambiguousColloquialRecipient = AppWorkflowRouter.inAppPlan(
+            "하영이한테 안녕이라고 보내줘",
+            requireNotNull(
+                AppWorkflowRouter.route(
+                    "하영이한테 안녕이라고 보내줘",
+                    listOf("카카오톡"),
+                ),
+            ),
+            snapshot().copy(
+                elements = listOf(
+                    element(
+                        "0.search",
+                        text = "하영",
+                        hintText = "검색",
+                        clickable = false,
+                        editable = true,
+                    ),
+                    element("0.hayoung.1", text = "하영"),
+                    element("0.hayoung.2", text = "하영"),
+                ),
+            ),
+        )
+        assertNull(ambiguousColloquialRecipient)
         val hiddenProfileSnapshot = snapshot().copy(
             packageName = "com.kakao.talk",
             windowBounds = ScreenBounds(0, 0, 1080, 2640),
@@ -745,6 +866,26 @@ class RuleBasedPlannerTest {
         )
         assertEquals(ActionType.CLICK, findUnexposedChatControlVisually?.actions?.first()?.type)
         assertNull(findUnexposedChatControlVisually?.actions?.first()?.target)
+        val waitInsteadOfGuessingWhileProfileLoads = AppWorkflowRouter.inAppPlan(
+            messageCommand,
+            messageRoute,
+            snapshot().copy(
+                windowBounds = ScreenBounds(0, 0, 1080, 1920),
+                elements = listOf(
+                    element(
+                        "0",
+                        bounds = ScreenBounds(0, 0, 1080, 1920),
+                    ),
+                    element(
+                        "0.profile.back",
+                        contentDescription = "이전",
+                        clickable = false,
+                    ),
+                    element("0.loading").copy(className = "android.widget.ProgressBar"),
+                ),
+            ),
+        )
+        assertEquals(ActionType.WAIT, waitInsteadOfGuessingWhileProfileLoads?.actions?.first()?.type)
         val typeDraft = AppWorkflowRouter.inAppPlan(
             messageCommand,
             messageRoute,
@@ -871,6 +1012,29 @@ class RuleBasedPlannerTest {
     }
 
     @Test
+    fun implicitFoodOrderDoesNotFinishAtGenericSearchResults() {
+        val command = "설렁탕 시켜줘"
+        val route = requireNotNull(AppWorkflowRouter.route(command, listOf("배달의민족")))
+        val unresolvedResults = snapshot().copy(
+            packageName = "com.sampleapp",
+            elements = listOf(
+                element(
+                    "0.search",
+                    text = "설렁탕",
+                    hintText = "검색",
+                    editable = true,
+                    focused = false,
+                ),
+                element("0.result-count", text = "음식점 결과"),
+                element("0.restaurant1", text = "설렁탕 가게 A"),
+                element("0.restaurant2", text = "설렁탕 가게 B"),
+            ),
+        )
+
+        assertNull(AppWorkflowRouter.inAppPlan(command, route, unresolvedResults))
+    }
+
+    @Test
     fun genericSearchNeverUsesAnUnlabelledLowerFormField() {
         val command = "가장 인기 있는 파스타 집에서 가장 인기 있는 파스타 주문해줘"
         val route = requireNotNull(AppWorkflowRouter.route(command, listOf("배달의민족")))
@@ -925,6 +1089,11 @@ class RuleBasedPlannerTest {
                     bounds = ScreenBounds(0, 560, 500, 740),
                 ),
                 element(
+                    "0.restaurant2",
+                    contentDescription = "파스타키친 별점 4.7 리뷰 200 배달비 무료",
+                    bounds = ScreenBounds(0, 760, 500, 940),
+                ),
+                element(
                     "0.restaurant.rating",
                     viewId = "com.example:id/star_rating",
                     text = "4.8",
@@ -953,6 +1122,43 @@ class RuleBasedPlannerTest {
             ActionType.BACK,
             AppWorkflowRouter.inAppPlan(command, route, closedRestaurant)?.actions?.first()?.type,
         )
+        val nextRestaurant = AppWorkflowRouter.inAppPlan(
+            command,
+            route,
+            sortedRestaurants,
+            successfulActions = listOf(
+                AgentAction(
+                    ActionType.CLICK,
+                    "요청한 인기순 결과의 첫 번째 비광고 '파스타' 식당을 선택합니다.",
+                    target = "0.restaurant",
+                ),
+                AgentAction(
+                    ActionType.BACK,
+                    "현재 주문할 수 없는 식당 상세에서 이전 결과로 돌아갑니다.",
+                ),
+            ),
+        )
+        assertEquals("0.restaurant2", nextRestaurant?.actions?.first()?.target)
+
+        val loadingRestaurantDetail = snapshot().copy(
+            elements = listOf(
+                element("0.search", contentDescription = "검색"),
+                element("0.loading-shell", clickable = false),
+            ),
+        )
+        val waitForRestaurantDetail = AppWorkflowRouter.inAppPlan(
+            command,
+            route,
+            loadingRestaurantDetail,
+            successfulActions = listOf(
+                AgentAction(
+                    ActionType.CLICK,
+                    "요청한 인기순 결과의 첫 번째 비광고 '파스타' 식당을 선택합니다.",
+                    target = "0.restaurant",
+                ),
+            ),
+        )
+        assertEquals(ActionType.WAIT, waitForRestaurantDetail?.actions?.first()?.type)
 
         val restaurantMenu = snapshot().copy(
             packageName = "com.sampleapp",
@@ -1043,6 +1249,15 @@ class RuleBasedPlannerTest {
             AppWorkflowRouter.inAppPlan(command, route, staleCartAlongsideMenu)
                 ?.actions?.first()?.target,
         )
+
+        val staleMenuAfterVerifiedAdd = AppWorkflowRouter.inAppPlan(
+            command,
+            route,
+            restaurantMenu,
+            successfulActions = listOf(requireNotNull(addMenu).actions.first()),
+        )
+        assertEquals(ActionType.WAIT, staleMenuAfterVerifiedAdd?.actions?.first()?.type)
+        assertNull(staleMenuAfterVerifiedAdd?.actions?.first()?.target)
 
         val replaceExistingCart = snapshot().copy(
             elements = listOf(

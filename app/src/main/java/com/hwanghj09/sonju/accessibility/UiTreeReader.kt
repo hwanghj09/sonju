@@ -7,6 +7,7 @@ import com.hwanghj09.sonju.agent.ScreenBounds
 import com.hwanghj09.sonju.agent.UiElement
 import com.hwanghj09.sonju.agent.UiNodeAction
 import com.hwanghj09.sonju.agent.UiSnapshot
+import com.hwanghj09.sonju.agent.UserIntervention
 import java.text.Normalizer
 import kotlin.math.abs
 import kotlin.math.max
@@ -18,8 +19,10 @@ object UiTreeReader {
     private const val MAX_DEPTH = 32
     private data class TraversalState(
         val elements: MutableList<UiElement> = mutableListOf(),
+        val arithmeticDisplays: MutableMap<String, UiElement> = mutableMapOf(),
         var visitedNodes: Int = 0,
         var truncated: Boolean = false,
+        var userIntervention: UserIntervention.Kind? = null,
     )
 
     private data class CredentialCandidate(
@@ -123,7 +126,10 @@ object UiTreeReader {
         traverse(root, "0", 0, traversal)
         val rawWindowTitle = runCatching { root.window?.title?.toString()?.take(120) }.getOrNull()
         val sensitiveWindow = isSensitiveText(rawWindowTitle)
-        val splitProtectedElements = markSplitCredentialClusters(traversal.elements)
+        val contextualElements = restorePublicArithmeticDisplays(
+            traversal.elements, traversal.arithmeticDisplays,
+        )
+        val splitProtectedElements = markSplitCredentialClusters(contextualElements)
         val elements = if (sensitiveWindow) {
             splitProtectedElements.map { it.redacted() }
         } else {
@@ -145,6 +151,7 @@ object UiTreeReader {
             elements = elements,
             treeTruncated = traversal.truncated,
             windowBounds = windowBounds,
+            userIntervention = traversal.userIntervention,
         )
     }
 
@@ -153,6 +160,8 @@ object UiTreeReader {
         path: String,
         depth: Int,
         state: TraversalState,
+        interactiveAncestor: Boolean = false,
+        webContentAncestor: Boolean = false,
     ) {
         if (Thread.currentThread().isInterrupted) {
             state.truncated = true
@@ -165,7 +174,7 @@ object UiTreeReader {
         state.visitedNodes += 1
 
         val element = runCatching {
-            val rawText = node.text?.toString()?.trim()?.take(120)
+            val rawText = node.text?.toString()?.trim()?.take(if (node.isEditable || webContentAncestor) 4_000 else 120)
             val rawDescription = node.contentDescription?.toString()?.trim()?.take(120)
             val rawStateDescription = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 node.stateDescription?.toString()?.trim()?.take(120)
@@ -199,7 +208,19 @@ object UiTreeReader {
                 isSensitiveText(rawTooltipText) && !isMirroredPublicValue(rawTooltipText) ||
                 isSensitiveText(rawViewId)
             val bounds = Rect().also(node::getBoundsInScreen)
-            UiElement(
+            if (node.isVisibleToUser) {
+                // Classify prompts locally before redaction. Entered field values are never used.
+                val prompts = if (node.isEditable) listOfNotNull(rawHintText) else semanticValues
+                val kind = prompts.firstNotNullOfOrNull(UserIntervention::kindFromLabel)?.takeIf {
+                    !node.isClickable && !node.isCheckable && !interactiveAncestor || node.isHeading || node.isEditable ||
+                        it == UserIntervention.Kind.CAPTCHA
+                }
+                    ?: if (node.isPassword) UserIntervention.Kind.LOGIN else null
+                if (kind != null && (state.userIntervention == null || kind != UserIntervention.Kind.LOGIN)) {
+                    state.userIntervention = kind
+                }
+            }
+            val result = UiElement(
                 path = path,
                 viewId = rawViewId,
                 className = node.className?.toString().orEmpty(),
@@ -227,6 +248,15 @@ object UiTreeReader {
                 heading = node.isHeading,
                 availableActions = availableActions,
             )
+            if (sensitive && !node.isPassword) {
+                val raw = result.copy(
+                    text = rawText, contentDescription = rawDescription,
+                    stateDescription = rawStateDescription, hintText = rawHintText,
+                    paneTitle = rawPaneTitle, tooltipText = rawTooltipText, sensitive = false,
+                )
+                if (isArithmeticDisplayCandidate(raw)) state.arithmeticDisplays[path] = raw
+            }
+            result
         }.getOrNull()
         if (element == null) {
             // Accessibility nodes can become stale between two property reads. Keep the usable
@@ -249,12 +279,14 @@ object UiTreeReader {
                 state.truncated = true
                 continue
             }
-            traverse(child, "$path.$index", depth + 1, state)
+            traverse(child, "$path.$index", depth + 1, state, interactiveAncestor || element?.clickable == true,
+                webContentAncestor || element?.className?.endsWith("WebView") == true)
         }
     }
 
     /** Empty layout wrappers stay out of the model but still count toward the traversal cap. */
     private fun UiElement.isUsefulForPlanning(): Boolean = sensitive || visible && (
+        className.endsWith("SurfaceView") || className.endsWith("TextureView") || className.endsWith("WebView") ||
         !viewId.isNullOrBlank() || !text.isNullOrBlank() || !contentDescription.isNullOrBlank() ||
             !stateDescription.isNullOrBlank() || !hintText.isNullOrBlank() ||
             !paneTitle.isNullOrBlank() || !tooltipText.isNullOrBlank() || clickable || editable ||
@@ -291,8 +323,11 @@ object UiTreeReader {
     }
 
     internal fun markSplitCredentialClusters(elements: List<UiElement>): List<UiElement> {
+        val arithmeticKeys = publicArithmeticKeyPaths(elements)
         val candidates = elements.mapNotNull { element ->
-            if (element.sensitive || !element.visible || !element.enabled) {
+            if (element.sensitive || !element.visible || !element.enabled ||
+                element.path in arithmeticKeys
+            ) {
                 return@mapNotNull null
             }
             val raw = element.text?.trim().takeUnless { it.isNullOrBlank() }
@@ -394,6 +429,86 @@ object UiTreeReader {
         return elements.map { element ->
             if (element.path in sensitivePaths) element.redacted() else element
         }
+    }
+
+    /** A full, observed arithmetic keypad distinguishes digit buttons from credential slots. */
+    private fun publicArithmeticKeyPaths(elements: List<UiElement>): Set<String> {
+        if (elements.any { it.visible && it.sensitive }) return emptySet()
+        fun key(element: UiElement): String? = listOfNotNull(
+            element.text, element.contentDescription,
+        ).map { Normalizer.normalize(it.trim(), Normalizer.Form.NFKC) }
+            .map { it.replace('−', '-').replace('*', '×').replace('/', '÷') }
+            .firstOrNull { it in arithmeticKeyLabels }
+        val controls = elements.filter {
+            it.visible && it.enabled && it.clickable && !it.editable &&
+                !hasCredentialSlotMetadata(it) && key(it) != null
+        }
+        val containers = controls.flatMap { control ->
+            val parts = control.path.split('.')
+            (2 until parts.size).map { parts.take(it).joinToString(".") }
+        }.distinct().sortedByDescending(String::length)
+        for (container in containers) {
+            val keys = controls.filter { it.path.startsWith("$container.") }
+            if (keys.mapNotNull(::key).toSet().containsAll(arithmeticKeyLabels)) {
+                return keys.mapTo(mutableSetOf(), UiElement::path)
+            }
+        }
+        return emptySet()
+    }
+
+    private val arithmeticKeyLabels = (0..9).map(Int::toString).toSet() +
+        setOf("+", "-", "×", "÷", "=")
+    private val arithmeticValuePattern = Regex("^[0-9０-９\\s.,+−×÷*/()=\\-]+$")
+    private val arithmeticDisplayContext = Regex(
+        "formula|expression|result|calculation|계산|수식|결과", RegexOption.IGNORE_CASE,
+    )
+    private val arithmeticDisplayPrefix = Regex(
+        "^(?:(?:계산기\\s*)?(?:입력란|수식|결과(?:\\s*미리보기)?)|" +
+            "(?:calculator\\s*)?(?:input|formula|expression|result))\\s*[:：]?\\s*",
+        RegexOption.IGNORE_CASE,
+    )
+    private val arithmeticDisplaySuffix = Regex(
+        "\\s*(?:계산\\s*결과|수식|(?:calculation\\s*)?result)\\s*$", RegexOption.IGNORE_CASE,
+    )
+
+    internal fun isArithmeticDisplayCandidate(element: UiElement): Boolean {
+        val value = arithmeticDisplayValue(element.text.orEmpty())
+        if (value.isEmpty() || !arithmeticValuePattern.matches(value) ||
+            value.count(Char::isDigit) !in 1..12
+        ) return false
+        val metadata = listOfNotNull(
+            element.viewId, element.contentDescription, element.stateDescription,
+            element.hintText, element.paneTitle, element.tooltipText,
+        )
+        return metadata.none { containsSensitiveTerm(it.lowercase()) ||
+            isCredentialSlotDescription(it) } &&
+            metadata.any(arithmeticDisplayContext::containsMatchIn)
+    }
+
+    internal fun matchesEnteredValue(element: UiElement, requested: String?): Boolean {
+        if (element.sensitive || requested == null) return false
+        fun normalized(value: String) = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        if (normalized(element.text.orEmpty()) == normalized(requested)) return true
+        if (!isArithmeticDisplayCandidate(element) || !arithmeticValuePattern.matches(requested)) return false
+        fun arithmetic(value: String) = normalized(value).replace(Regex("\\s+"), "")
+            .replace('−', '-').replace('*', '×').replace('/', '÷')
+        return arithmetic(arithmeticDisplayValue(element.text.orEmpty())) == arithmetic(requested)
+    }
+
+    private fun arithmeticDisplayValue(text: String): String = text.trim()
+        .replace(arithmeticDisplayPrefix, "").replace(arithmeticDisplaySuffix, "")
+        .replace("곱하기", "×").replace("나누기", "÷")
+        .replace("더하기", "+").replace("빼기", "-")
+
+    internal fun restorePublicArithmeticDisplays(
+        elements: List<UiElement>,
+        candidates: Map<String, UiElement>,
+    ): List<UiElement> {
+        if (candidates.isEmpty()) return elements
+        val contextual = elements.map { element ->
+            candidates[element.path]?.takeIf(::isArithmeticDisplayCandidate) ?: element
+        }
+        return if (publicArithmeticKeyPaths(contextual).isNotEmpty()) contextual else elements
     }
 
     private fun looksLikeCalendarDateRow(

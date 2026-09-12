@@ -15,8 +15,10 @@ import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
 import kotlin.math.min
 
-/** 화면 제어 중임을 알리는 터치 불가 다섯 색상 가장자리 안개 효과입니다. */
+/** 요청 처리 중 화면 잠금을 알리는 다섯 색상 오로라 효과입니다. */
 internal class ScreenControlGlowView(context: Context) : View(context) {
+    var drawingSuppressed = false
+        set(value) { field = value; invalidate() }
     private val density = resources.displayMetrics.density
     private val glowColors = intArrayOf(
         Color.rgb(108, 132, 235), // #6C84EB
@@ -124,7 +126,8 @@ internal class ScreenControlGlowView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (width == 0 || height == 0) return
+        if (drawingSuppressed || width == 0 || height == 0) return
+        canvas.drawColor(Color.argb(16, 108, 132, 235))
         val fogAlpha = (112 * pulse).toInt().coerceIn(0, 255)
         topFogPaint.alpha = fogAlpha
         bottomFogPaint.alpha = fogAlpha

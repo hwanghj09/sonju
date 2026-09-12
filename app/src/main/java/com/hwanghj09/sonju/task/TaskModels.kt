@@ -54,6 +54,9 @@ data class CanonicalTask(
     val constraints: List<Constraint>,
     val risk: TaskRisk,
     val completionLevel: CompletionLevel = CompletionLevel.NAVIGATE_TO_TARGET,
+    val requestKey: String = "",
+    /** In-memory only; lets learned inputs refer to spans of the current request. */
+    val requestText: String? = null,
 ) {
     val key: String
         get() = listOf(appId ?: "any", taskType, parameters.keys.sorted().joinToString(","))
@@ -70,7 +73,10 @@ interface TaskCanonicalizer {
 
 /** Local parser for repeatable task shapes. Unknown requests remain generic for the model slow path. */
 object DeterministicTaskParser : TaskParser {
-    override fun parse(text: String): UserIntent {
+    override fun parse(text: String): UserIntent = parse(text, null)
+
+    /** A grammatical prefix is an app only when it matches the supplied launcher catalog. */
+    fun parse(text: String, installedAppLabels: Collection<String>?): UserIntent {
         val raw = Normalizer.normalize(text.trim(), Normalizer.Form.NFKC).take(MAX_COMMAND_LENGTH)
         val normalized = normalize(raw)
         val nestedOrder = NESTED_POPULAR_ORDER.matchEntire(raw)
@@ -79,16 +85,31 @@ object DeterministicTaskParser : TaskParser {
         val targetApp = if (nestedOrder != null || routeDestination != null) {
             null
         } else {
-            (
-                APP_IN_PATTERN.find(raw) ?:
-                    APP_WORKFLOW_PATTERN.find(raw) ?:
-                    KNOWN_APP_PREFIX.find(raw) ?:
-                    KNOWN_APP_MENTION.find(raw)
-                )
+            val candidate = (APP_IN_PATTERN.find(raw) ?: APP_WORKFLOW_PATTERN.find(raw))
                 ?.groupValues?.getOrNull(1)
                 ?.trim()?.takeIf(String::isNotBlank)
+            if (installedAppLabels != null) {
+                candidate?.takeIf { name -> installedAppLabels.any { compactApp(it) == compactApp(name) } }
+                    ?: installedAppLabels.sortedByDescending(String::length).firstOrNull { label ->
+                        Regex("^${Regex.escape(label)}(?=\\s|을|를|에서|으로|로|$)", RegexOption.IGNORE_CASE)
+                            .containsMatchIn(raw)
+                    }
+            } else {
+                (KNOWN_APP_PREFIX.find(raw) ?: KNOWN_APP_MENTION.find(raw))?.groupValues?.getOrNull(1)
+            }
         }
+        val body = stripAppPrefix(raw, targetApp)
+        val implicitFoodOrderQuery = orderQuery(body)
+            ?.takeIf { nestedOrder == null && targetApp == null }
         val entities = buildMap {
+            if (ARITHMETIC_CONTEXT.containsMatchIn(raw)) {
+                ARITHMETIC_EXPRESSION.findAll(raw).singleOrNull()?.value?.let { expression ->
+                    put("expression", expression.replace(Regex("\\s+"), "")
+                        .replace("곱하기", "×").replace("나누기", "÷")
+                        .replace("더하기", "+").replace("빼기", "-")
+                        .replace('*', '×').replace('/', '÷').replace('−', '-'))
+                }
+            }
             nestedOrder?.let { match ->
                 val restaurant = cleanFoodNoun(match.groupValues[1])
                 val menu = cleanFoodNoun(match.groupValues[2])
@@ -98,8 +119,13 @@ object DeterministicTaskParser : TaskParser {
                 }
                 if (menu.isNotBlank()) put("menu_query", menu)
             }
+            implicitFoodOrderQuery?.let { query ->
+                put("query", query)
+                put("restaurant_query", query)
+                put("menu_query", query)
+            }
             messageRequest?.let { match ->
-                match.groupValues[1].trim().takeIf(String::isNotBlank)
+                cleanRecipient(match.groupValues[1]).takeIf(String::isNotBlank)
                     ?.let { put("recipient", it) }
                 match.groupValues[2].trim().takeIf(String::isNotBlank)
                     ?.let { put("message", it) }
@@ -113,24 +139,39 @@ object DeterministicTaskParser : TaskParser {
             (DESTINATION.find(raw)?.groupValues?.getOrNull(1)
                 ?: routeDestination?.groupValues?.getOrNull(1))
                 ?.trim()?.takeIf(String::isNotBlank)
-                ?.let { put("destination", stripAppPrefix(it)) }
+                ?.let { route ->
+                    // Separate origin from destination before removing an optional application prefix.
+                    // Both '서울역에서 시청역까지' and '지도에서 서울역에서 시청역까지' have the same places.
+                    val from = route.lastIndexOf("에서 ")
+                    if (from >= 0) {
+                        val origin = route.substring(0, from).substringAfterLast("에서 ").trim()
+                        if (origin.isNotBlank() && compactApp(origin) != targetApp?.let(::compactApp)) {
+                            put("origin", origin)
+                        }
+                        put("destination", route.substring(from + 3).trim())
+                    } else put("destination", stripAppPrefix(route, targetApp))
+                }
             if ("query" !in this && "message" !in this) {
                 QUOTED.find(raw)?.groupValues?.getOrNull(1)?.trim()?.takeIf(String::isNotBlank)
                     ?.let { put("query", it) }
             }
             if ("query" !in this && "message" !in this) {
-                orderQuery(raw)?.let { put("query", it) }
+                orderQuery(body)?.let { put("query", it) }
             }
             if ("query" !in this && "message" !in this) {
-                SEARCH_QUERY.find(raw)?.groupValues?.getOrNull(1)?.trim()
+                SEARCH_QUERY.find(body)?.groupValues?.getOrNull(1)?.trim()
                     ?.let(::cleanSearchQuery)?.takeIf { it.length in 1..120 }
                     ?.let { put("query", it) }
             }
         }
         val constraints = buildList {
-            if (nestedOrder != null) {
+            if (nestedOrder != null || implicitFoodOrderQuery != null &&
+                POPULARITY_TERMS.any(normalized::contains)
+            ) {
                 add(Constraint("restaurant_sort", ConstraintOperator.MATCHES, "popular"))
                 add(Constraint("menu_sort", ConstraintOperator.MATCHES, "popular"))
+            } else if (implicitFoodOrderQuery != null) {
+                add(Constraint("selection_policy", ConstraintOperator.MATCHES, "best_available"))
             } else if (POPULARITY_TERMS.any(normalized::contains)) {
                 add(Constraint("sort", ConstraintOperator.MATCHES, "popular"))
             }
@@ -145,7 +186,10 @@ object DeterministicTaskParser : TaskParser {
             targetApp = targetApp,
             entities = entities,
             constraints = constraints,
-            requestedCompletionLevel = completionLevel(normalized, risk),
+            requestedCompletionLevel = if (risk == TaskRisk.LOW &&
+                RequestInterpreter.understand(raw).purpose == RequestPurpose.INFORMATION_LOOKUP) {
+                CompletionLevel.INFORMATION_ONLY
+            } else completionLevel(normalized, risk),
             risk = risk,
         )
     }
@@ -169,12 +213,15 @@ object DeterministicTaskParser : TaskParser {
         else -> CompletionLevel.NAVIGATE_TO_TARGET
     }
 
-    private fun stripAppPrefix(value: String): String = value
-        .replace(APP_PREFIX, "")
-        .trim(' ', ',', '.', '을', '를')
+    private fun stripAppPrefix(value: String, app: String?): String =
+        if (app.isNullOrBlank()) value else value.replace(
+            Regex("^${Regex.escape(app)}\\s*(?:(?:에서|으로|로)\\s+|(?:들어가서|열어서)\\s+)",
+                RegexOption.IGNORE_CASE), "")
+
+    private fun compactApp(value: String) = normalize(value).replace(" ", "")
 
     private fun cleanSearchQuery(value: String): String {
-        var query = stripAppPrefix(value)
+        var query = value.trim(' ', ',', '.', '을', '를')
         var qualifierRemoved = false
         SEARCH_QUALIFIERS.forEach { qualifier ->
             if (query.contains(qualifier, ignoreCase = true)) {
@@ -190,7 +237,7 @@ object DeterministicTaskParser : TaskParser {
     private fun orderQuery(raw: String): String? {
         if (!ORDER_ENDING.containsMatchIn(raw)) return null
         val withoutOrderVerb = raw.replace(ORDER_ENDING, "").trim()
-        return stripAppPrefix(withoutOrderVerb).takeIf { it.length in 1..120 }
+        return cleanSearchQuery(withoutOrderVerb).takeIf { it.length in 1..120 }
     }
 
     private fun cleanFoodNoun(value: String): String = value
@@ -198,6 +245,18 @@ object DeterministicTaskParser : TaskParser {
         .trim()
         .replace(Regex("\\s*(?:집|가게|식당)$"), "")
         .trim()
+
+    /** `하영이한테`처럼 받침 있는 이름 뒤에 붙은 구어체 `이`는 이름에서 분리한다. */
+    private fun cleanRecipient(value: String): String {
+        val recipient = value.trim()
+        return recipient.dropLast(1).takeIf {
+            recipient.endsWith('이') && recipient.length > 1 &&
+                hasFinalConsonant(recipient[recipient.lastIndex - 1])
+        } ?: recipient
+    }
+
+    private fun hasFinalConsonant(character: Char): Boolean =
+        character in '가'..'힣' && (character.code - '가'.code) % 28 != 0
 
     private fun normalize(value: String): String = value.lowercase()
         .replace(Regex("\\s+"), " ")
@@ -213,7 +272,6 @@ object DeterministicTaskParser : TaskParser {
             "(?=\\s|을|를|에서|으로|로|프로필|$)",
         RegexOption.IGNORE_CASE,
     )
-    private val APP_PREFIX = Regex("^.{1,40}?(?:(?:에서|으로|로)\\s+|(?:들어가서|열어서)\\s+)")
     private val QUOTED = Regex("[\\\"“”']([^\\\"“”']{1,120})[\\\"“”']")
     private val DESTINATION = Regex("(.{1,120}?)까지(?:\\s|$)")
     private val ROUTE_DESTINATION = Regex(
@@ -247,6 +305,10 @@ object DeterministicTaskParser : TaskParser {
         "결제해", "송금해", "주문해", "시켜", "호출해", "예약해", "전송해", "삭제해",
     )
     private val CRITICAL_TERMS = setOf("송금", "이체", "결제", "비밀번호 변경", "계정 탈퇴", "신원 인증")
+    private val ARITHMETIC_CONTEXT = Regex("계산|곱하기|나누기|더하기|빼기")
+    private val ARITHMETIC_EXPRESSION = Regex(
+        "(?<![\\p{L}\\p{Nd}])\\d+(?:\\.\\d+)?(?:\\s*(?:곱하기|나누기|더하기|빼기|[+×*÷/−-])\\s*\\d+(?:\\.\\d+)?)+",
+    )
     private val HIGH_TERMS = setOf("주문 확정", "주문해", "호출해", "예약 확정", "예약해", "전송해", "삭제")
     private val MEDIUM_TERMS = setOf("장바구니", "담아", "입력", "선택")
     private const val MAX_COMMAND_LENGTH = 1_000
@@ -258,6 +320,7 @@ object DeterministicTaskCanonicalizer : TaskCanonicalizer {
         val taskType = when {
             intent.entities.containsKey("recipient") && intent.entities.containsKey("message") ->
                 "send_message"
+            intent.entities.containsKey("expression") -> "calculate"
             intent.entities["target_state"] == "프로필 편집" -> "edit_profile"
             intent.entities.containsKey("destination") && DIRECTIONS_TERMS.any(normalized::contains) ->
                 "directions"

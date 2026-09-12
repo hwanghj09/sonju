@@ -121,7 +121,7 @@ sealed class VerificationResult {
         val violatedConstraints: List<Constraint> = emptyList(),
     ) : VerificationResult()
     data class NeedsConfirmation(val reason: String, val summary: String) : VerificationResult()
-    data class NeedsReplan(val reason: String) : VerificationResult()
+    data class NeedsReplan(val reason: String, val accessibilityTargetMissing: Boolean = false) : VerificationResult()
 }
 
 interface ActionVerifier {
@@ -158,6 +158,26 @@ class DeterministicActionVerifier(
         }
         val indexed = executable.single()
         val action = indexed.value
+        if (action.type == ActionType.START_TIMER &&
+            com.hwanghj09.sonju.agent.TimerRequest.parse(intent.rawText)?.matches(action) != true) {
+            return VerificationResult.Blocked("타이머 시간과 이름이 현재 사용자의 명확한 시작 요청과 일치해야 합니다.")
+        }
+        if (action.type == ActionType.WAIT_FOR_USER) {
+            return VerificationResult.Blocked("직접 확인은 사용자 대기 단계이며 접근성 실행 권한을 발급하지 않습니다.")
+        }
+        val intervention = com.hwanghj09.sonju.agent.UserIntervention.required(snapshot, intent.rawText)
+        if (intervention != null && intervention != com.hwanghj09.sonju.agent.UserIntervention.Kind.OTHER &&
+            action.type != ActionType.OPEN_APP) {
+            return VerificationResult.Blocked("인증 화면은 사용자가 직접 완료해야 합니다.")
+        }
+        if (action.type == ActionType.OPEN_URL &&
+            !com.hwanghj09.sonju.agent.HospitalReservationWorkflow.isAllowedUrl(intent.rawText, action.target)) {
+            return VerificationResult.Blocked("요청에 연결된 검토된 공식 조회 주소만 열 수 있습니다.")
+        }
+        if (com.hwanghj09.sonju.agent.HospitalReservationWorkflow.matches(intent.rawText) &&
+            action.type !in setOf(ActionType.OPEN_URL, ActionType.SCROLL_DOWN, ActionType.SCROLL_UP, ActionType.WAIT)) {
+            return VerificationResult.Blocked("예약 기록 조회에서는 로그인 입력이나 예약 변경·취소 버튼을 자동 조작하지 않습니다.")
+        }
         if (action.type == ActionType.CLICK && action.target.isNullOrBlank()) {
             return VerificationResult.NeedsReplan("클릭에는 화면에서 확인 가능한 semantic target이 필요합니다.")
         }
@@ -180,7 +200,15 @@ class DeterministicActionVerifier(
             }
         }
 
-        val grounding = ground(action, screen)
+        val scroll = action.type in setOf(ActionType.SCROLL_DOWN, ActionType.SCROLL_UP,
+            ActionType.SCROLL_LEFT, ActionType.SCROLL_RIGHT)
+        val renderedScrollSurface = if (scroll && plan.visualFallback && plan.visualFrameVerified &&
+            plan.visualFrameHash != null && plan.source in setOf(PlanSource.OPENAI_SEMANTIC_MAP, PlanSource.SKILL_FAST_PATH) &&
+            !snapshot.treeTruncated && snapshot.elements.none { it.visible && (it.sensitive || it.scrollable) }) {
+            com.hwanghj09.sonju.agent.ScreenContextHandoff.unobservedRenderedSurfaces(snapshot).singleOrNull()
+                ?.takeIf { action.target.isNullOrBlank() || action.target == it.path || action.target == it.viewId }
+        } else null
+        val grounding = if (renderedScrollSurface != null) null else ground(action, screen)
         val grounded = when (grounding) {
             is GroundingResult.Success -> grounding
             is GroundingResult.Ambiguous -> return if (task.risk >= TaskRisk.HIGH) {
@@ -188,7 +216,7 @@ class DeterministicActionVerifier(
             } else {
                 VerificationResult.NeedsReplan("화면 대상이 여러 개라 하나로 식별해야 합니다.")
             }
-            is GroundingResult.NotFound -> return VerificationResult.NeedsReplan(grounding.reason)
+            is GroundingResult.NotFound -> return VerificationResult.NeedsReplan(grounding.reason, accessibilityTargetMissing = true)
             null -> null
         }
         if (grounded != null && grounded.confidence < MIN_STRUCTURED_CONFIDENCE) {
@@ -200,16 +228,10 @@ class DeterministicActionVerifier(
             return VerificationResult.Blocked("고위험 동작의 대상을 충분히 확신할 수 없습니다.")
         }
         val groundedNode = grounded?.nodeId?.let { id -> screen.nodes.firstOrNull { it.nodeId == id } }
-        val submittedParameter = task.parameters["query"]?.value
-            ?: task.parameters["destination"]?.value
-            ?: task.parameters["recipient"]?.value
-        if (action.type == ActionType.SUBMIT_TEXT && (
-                plan.source != PlanSource.LOCAL_RULE ||
-                    compact(submittedParameter.orEmpty()) != compact(action.value.orEmpty())
-                )
-        ) {
-            return VerificationResult.Blocked(
-                "검색어 제출은 현재 요청에서 직접 추출한 검색어의 로컬 경로에서만 실행합니다.",
+        val observedSearchSubmit = SearchSubmissionPolicy.allows(intent.rawText, action, snapshot, grounded?.nodeId)
+        if (action.type == ActionType.SUBMIT_TEXT && !observedSearchSubmit) {
+            return VerificationResult.NeedsReplan(
+                "현재 검색·주소 입력란에 실제로 입력된 값과 일치하는 내용만 제출할 수 있습니다.",
             )
         }
         if (action.type in setOf(ActionType.SET_TEXT, ActionType.SUBMIT_TEXT) &&
@@ -218,8 +240,9 @@ class DeterministicActionVerifier(
             return VerificationResult.Blocked("비밀번호·OTP·인증정보 입력은 자동화하지 않습니다.")
         }
 
-        val visual = action.type == ActionType.CLICK_COORDINATE
-        val verifiedAppAdapterCoordinate = visual && isVerifiedAppAdapterCoordinate(
+        val coordinate = action.type == ActionType.CLICK_COORDINATE
+        val visual = coordinate || renderedScrollSurface != null
+        val verifiedAppAdapterCoordinate = coordinate && isVerifiedAppAdapterCoordinate(
             task = task,
             plan = plan,
             action = action,
@@ -227,29 +250,37 @@ class DeterministicActionVerifier(
             screen = screen,
         )
         if (visual && (!plan.visualFallback ||
-                plan.source != PlanSource.OPENAI_SEMANTIC_MAP && !verifiedAppAdapterCoordinate)
+                plan.source != PlanSource.OPENAI_SEMANTIC_MAP && !verifiedAppAdapterCoordinate &&
+                !(plan.source == PlanSource.SKILL_FAST_PATH && plan.visualFrameVerified && plan.visualFrameHash != null))
         ) {
             return VerificationResult.Blocked("일반 계획 경로에서는 좌표 동작을 실행할 수 없습니다.")
         }
-        if (visual && (snapshot.elements.any { it.visible && it.sensitive } ||
-                action.xRatio?.let { it.isFinite() && it in 0.0..1.0 } != true ||
-                action.yRatio?.let { it.isFinite() && it in 0.0..1.0 } != true)
+        if (visual && (snapshot.elements.any { it.visible && it.sensitive } || coordinate &&
+                (action.xRatio?.let { it.isFinite() && it in 0.0..1.0 } != true ||
+                action.yRatio?.let { it.isFinite() && it in 0.0..1.0 } != true))
         ) {
             return VerificationResult.Blocked("시각 폴백 좌표 또는 화면의 개인정보 경계가 안전하지 않습니다.")
         }
 
-        if (isUnderSpecifiedFoodChoice(action, task, groundedNode, plan.source) && !userConfirmed) {
-            return VerificationResult.NeedsConfirmation(
-                reason = "요청에서 식당·메뉴·옵션이 하나로 지정되지 않아 이 항목을 선택하기 전에 확인이 필요합니다.",
-                summary = confirmationSummary(intent, plan, action, screen),
-            )
+        // Risk belongs to this control's effect, not the whole request or the model's narration.
+        // A clickable wrapper can have its label on an inert child (including virtual web nodes).
+        val labels = groundedNode?.let { node ->
+            listOfNotNull(node.text, node.contentDescription, node.normalizedLabel).filter(String::isNotBlank).ifEmpty {
+                screen.nodes.filter { it.nodeId.startsWith("${node.nodeId}.") }
+                    .flatMap { listOfNotNull(it.text, it.contentDescription, it.normalizedLabel) }
+            }
+        }.orEmpty().ifEmpty { if (coordinate) listOfNotNull(action.target) else emptyList() }.distinct()
+        if (action.type in setOf(ActionType.CLICK, ActionType.CLICK_COORDINATE) && labels.isEmpty() &&
+            task.risk >= TaskRisk.HIGH && !verifiedAppAdapterCoordinate) {
+            return VerificationResult.NeedsReplan("실제 컨트롤의 동작을 확인할 수 없어 라벨이나 다른 대상을 다시 찾아야 합니다.")
         }
-
-        val irreversible = isIrreversible(action, intent, task, screen)
+        val irreversible = groundedNode?.checked == null && isIrreversible(action, labels, task, screen)
         if (irreversible && intent.requestedCompletionLevel == CompletionLevel.BEFORE_IRREVERSIBLE_ACTION) {
             return VerificationResult.Blocked("요청한 완료 경계가 최종 확정 직전이므로 해당 동작은 실행하지 않습니다.")
         }
-        if ((task.risk == TaskRisk.CRITICAL || isCriticalAction(action)) && irreversible) {
+        if (irreversible && (labels.any { label -> CRITICAL_ACTION_TERMS.any(compact(label)::contains) } ||
+                labels.any { compact(it) in CONTEXTUAL_COMMIT_LABELS } &&
+                screen.visibleTexts.any { label -> CRITICAL_CONFIRMATION_CONTEXT.containsMatchIn(compact(label)) })) {
             return VerificationResult.Blocked("결제·금융·계정 보안의 최종 동작은 현재 제품 정책상 실행하지 않습니다.")
         }
         if (irreversible && !userConfirmed) {
@@ -262,7 +293,7 @@ class DeterministicActionVerifier(
         val verifiedAction = VerifiedAction(
             actionIndex = indexed.index,
             action = action,
-            resolvedNodeId = grounded?.nodeId,
+            resolvedNodeId = grounded?.nodeId ?: renderedScrollSurface?.path,
             groundingConfidence = grounded?.confidence,
             visualFallback = visual,
             canRetryAfterNoEffect = action.type == ActionType.CLICK && !irreversible,
@@ -361,23 +392,13 @@ class DeterministicActionVerifier(
 
     private fun isIrreversible(
         action: AgentAction,
-        intent: UserIntent,
+        labels: List<String>,
         task: CanonicalTask,
         screen: ScreenState,
     ): Boolean {
-        if (action.type !in setOf(
-                ActionType.CLICK,
-                ActionType.CLICK_COORDINATE,
-                ActionType.SET_TEXT,
-                ActionType.SUBMIT_TEXT,
-            )
-        ) {
-            return false
-        }
-        val context = listOf(
-            action.description,
-            action.target,
-        ).joinToString(" ").let(::compact)
+        // Text entry is a draft. SUBMIT_TEXT has already been limited to observed search/address fields.
+        if (action.type !in setOf(ActionType.CLICK, ActionType.CLICK_COORDINATE)) return false
+        val context = labels.joinToString(" ").let(::compact)
         if (task.taskType == "order_food" &&
             ORDER_REVIEW_NAVIGATION_TERMS.any(context::contains) &&
             screen.visibleTexts.any { label ->
@@ -387,38 +408,16 @@ class DeterministicActionVerifier(
         ) {
             return false
         }
-        return IRREVERSIBLE_TERMS.any(context::contains) ||
-            task.risk >= TaskRisk.HIGH && COMMIT_SIGNALS.any(context::contains)
-    }
-
-    private fun isCriticalAction(action: AgentAction): Boolean {
-        val context = listOf(action.description, action.target).joinToString(" ").let(::compact)
-        return CRITICAL_ACTION_TERMS.any(context::contains)
-    }
-
-    private fun isUnderSpecifiedFoodChoice(
-        action: AgentAction,
-        task: CanonicalTask,
-        groundedNode: com.hwanghj09.sonju.perception.SemanticNode?,
-        planSource: PlanSource,
-    ): Boolean {
-        if (task.taskType != "order_food" ||
-            action.type !in setOf(ActionType.CLICK, ActionType.CLICK_COORDINATE)
-        ) return false
-        val label = groundedNode?.normalizedLabel.orEmpty().let(::compact)
-        val query = task.parameters["query"]?.value.orEmpty().let(::compact)
-        if (label.isNotBlank() && label == query) return false
-        if (label in FOOD_ORDER_NAVIGATION_LABELS) return false
-        val actionContext = listOf(action.description, action.target).joinToString(" ").let(::compact)
-        val requestedRankedWorkflowStep = planSource == PlanSource.LOCAL_RULE &&
-            task.constraints.any { constraint ->
-                constraint.field in setOf("restaurant_sort", "menu_sort") &&
-                    constraint.value == "popular"
-            } && (RANKED_SELECTION_TERMS + REVERSIBLE_FOOD_PROGRESS_TERMS)
-                .any(actionContext::contains)
-        if (requestedRankedWorkflowStep) return false
-        if (COMMIT_SIGNALS.any(actionContext::contains)) return false
-        return FOOD_ORDER_NAVIGATION_LABELS.none(actionContext::contains)
+        return labels.any { label ->
+            val text = compact(label)
+            !com.hwanghj09.sonju.task.RequestInterpreter.isLookupSurface(label) &&
+                !(REVERSIBLE_CONTROL_LABEL.matches(text) && !COMPOUND_COMMIT_LABEL.containsMatchIn(text)) && (
+                    IRREVERSIBLE_CONTROL_LABEL.containsMatchIn(text) ||
+                        text in CONTEXTUAL_COMMIT_LABELS && screen.visibleTexts.any {
+                            COMMIT_CONFIRMATION_CONTEXT.containsMatchIn(compact(it))
+                        }
+                    )
+        }
     }
 
     private fun confirmationSummary(
@@ -448,7 +447,9 @@ class DeterministicActionVerifier(
             ActionType.SCROLL_RIGHT,
         )
         private val SCREEN_INDEPENDENT_ACTIONS = setOf(
+            ActionType.START_TIMER,
             ActionType.OPEN_APP,
+            ActionType.OPEN_URL,
             ActionType.OPEN_WIFI_SETTINGS,
             ActionType.OPEN_SOUND_SETTINGS,
             ActionType.OPEN_ACCESSIBILITY_SETTINGS,
@@ -465,28 +466,32 @@ class DeterministicActionVerifier(
             "비밀번호", "비번", "password", "passcode", "pin", "otp", "인증번호",
             "보안코드", "카드번호", "cvc", "cvv", "주민등록번호", "계좌번호",
         ).map { Normalizer.normalize(it, Normalizer.Form.NFKC).lowercase().replace(Regex("[^\\p{L}\\p{Nd}]"), "") }
-        private val IRREVERSIBLE_TERMS = setOf(
-            "결제", "송금", "이체", "구매", "주문확정", "주문하기", "택시호출",
-            "호출하기", "예약확정", "전송", "삭제", "탈퇴", "paynow", "placeorder",
-            "confirm", "transfernow",
+        private val IRREVERSIBLE_CONTROL_LABEL = Regex(
+            "결제|송금|이체|구매|주문(?:확정|하기)|택시호출|호출하기|예약(?:확정|취소)|" +
+                "전송|보내기|삭제|탈퇴|게시(?:하기|완료|확정)?$|발행(?:하기|완료|확정)?$|구독하기|" +
+                "비밀번호변경|신원인증|" +
+                "^(?:pay(?:now)?|placeorder|transfer(?:now)?|purchase|buy(?:now)?|send|delete|publish|post|" +
+                "confirm(?:payment|transfer|purchase|order|booking|reservation)|booknow|cancel(?:booking|reservation))$",
         )
-        private val COMMIT_SIGNALS = setOf(
-            "확정", "완료", "결제", "송금", "이체", "주문", "호출", "예약", "전송", "삭제", "탈퇴",
-            "confirm", "submit", "pay", "transfer", "order", "call", "book", "send", "delete",
+        private val REVERSIBLE_CONTROL_LABEL = Regex(
+            ".*(?:검색|입력|선택|설정|수단|방법|안내|도움말|메뉴|화면|조회|보기|내역|기록|목록|" +
+                "search|input|settings|method|help|history|details)|(?:닫기|뒤로|취소|나중에|close|back|cancel)",
+        )
+        private val COMPOUND_COMMIT_LABEL = Regex("(?:삭제|전송|결제|송금|이체|탈퇴|구매)(?:하|해|후|하고|및)|(?:delete|send|pay|transfer)and")
+        private val CONTEXTUAL_COMMIT_LABELS = setOf(
+            "확인", "확정", "완료", "예", "동의", "계속", "예약", "예약하기", "예약확인", "주문", "주문확인",
+            "confirm", "ok", "yes", "submit", "continue",
+        )
+        private val COMMIT_CONFIRMATION_CONTEXT = Regex(
+            "(?:삭제|탈퇴|전송|송금|이체|결제|구매|예약|주문확정|게시|발행).*(?:하시겠|할까요|진행할|동의|되돌릴수없|취소할수없)|" +
+                "(?:confirm|areyousure).*(?:delete|send|pay|transfer|purchase|order|booking|reservation)",
+        )
+        private val CRITICAL_CONFIRMATION_CONTEXT = Regex(
+            "(?:결제|송금|이체|구매|탈퇴).*(?:하시겠|할까요|진행할|동의)|" +
+                "(?:confirm|areyousure).*(?:pay|transfer|purchase)",
         )
         private val CRITICAL_ACTION_TERMS = setOf(
-            "결제", "송금", "이체", "비밀번호변경", "계정탈퇴", "신원인증", "paynow", "transfernow",
-        )
-        private val FOOD_ORDER_NAVIGATION_LABELS = setOf(
-            "검색", "검색하기", "search", "뒤로", "back", "닫기", "닫", "close",
-            "건너뛰", "나중에", "skip", "notnow",
-        )
-        private val RANKED_SELECTION_TERMS = setOf(
-            "요청한인기순", "인기순첫번째", "인기메뉴첫번째", "requestedpopularrank",
-        )
-        private val REVERSIBLE_FOOD_PROGRESS_TERMS = setOf(
-            "선택한인기메뉴", "장바구니에담", "장바구니보기", "장바구니교체",
-            "viewcart", "addtocart", "replacecart",
+            "결제", "송금", "이체", "구매", "비밀번호변경", "계정탈퇴", "신원인증", "pay", "transfer", "purchase", "buy",
         )
         private val ORDER_REVIEW_NAVIGATION_TERMS = setOf(
             "주문서화면으로이동", "배달주문하기", "포장주문하기", "revieworder",

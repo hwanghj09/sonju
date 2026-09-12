@@ -14,17 +14,16 @@ class LocalSkillRepository(context: Context) : SkillRepository {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
     override fun find(query: SkillQuery): List<AppSkill> = all().filter { skill ->
-        skill.status != SkillStatus.DISABLED && skill.canonicalTaskKey == query.canonicalTaskKey &&
+        skill.status != SkillStatus.DISABLED && skill.requestKey == query.requestKey &&
+            skill.canonicalTaskKey == query.canonicalTaskKey &&
             skill.taskType == query.taskType &&
-            (query.appId == null || skill.appId == query.appId) &&
-            (skill.exitFingerprint == query.screenFingerprint ||
-                skill.steps.any { it.entryFingerprint == query.screenFingerprint })
+            (query.appId == null || skill.appId == query.appId)
     }.sortedWith(compareByDescending<AppSkill> { it.confidence }.thenByDescending { it.version })
 
-    override fun get(skillId: String): AppSkill? = preferences.getString(key(skillId), null)?.let(::decode)
+    override fun get(skillId: String): AppSkill? = preferences.getString(key(skillId), null)?.let(SkillCodec::decode)
 
     override fun save(skill: AppSkill) {
-        preferences.edit { putString(key(skill.skillId), encode(skill)) }
+        preferences.edit { putString(key(skill.skillId), SkillCodec.encode(skill)) }
         trim()
     }
 
@@ -54,7 +53,7 @@ class LocalSkillRepository(context: Context) : SkillRepository {
 
     private fun all(): List<AppSkill> = preferences.all.asSequence()
         .filter { (name, _) -> name.startsWith(KEY_PREFIX) }
-        .mapNotNull { (_, raw) -> (raw as? String)?.let(::decode) }
+        .mapNotNull { (_, raw) -> (raw as? String)?.let(SkillCodec::decode) }
         .toList()
 
     private fun trim() {
@@ -65,11 +64,32 @@ class LocalSkillRepository(context: Context) : SkillRepository {
         }
     }
 
-    private fun encode(skill: AppSkill): String = JSONObject()
+    private fun key(skillId: String): String = KEY_PREFIX + skillId
+
+    companion object {
+        private const val PREFERENCES = "sonju_app_skills_v1"
+        private const val KEY_PREFIX = "skill_"
+        private const val MAX_SKILLS = 100
+    }
+}
+
+internal object SkillCodec {
+    private const val SCHEMA_VERSION = 1
+    fun encode(skill: AppSkill): String = JSONObject()
         .put("schema", SCHEMA_VERSION)
         .put("skill_id", skill.skillId)
         .put("app_id", skill.appId)
         .put("task_type", skill.taskType)
+        .put("request_key", skill.requestKey)
+        .put("exit_visual", skill.exitVisualFrameHash ?: JSONObject.NULL)
+        .put("exit_package", skill.exitPackage ?: JSONObject.NULL)
+        .put("goal_checks", JSONArray().apply {
+            skill.goalChecks.forEach { check ->
+                put(JSONObject().put("selector", check.selector)
+                    .put("text_hash", check.textHash ?: JSONObject.NULL)
+                    .put("checked", check.checked ?: JSONObject.NULL))
+            }
+        })
         .put("name", skill.name)
         .put("description", skill.description)
         .put("entry", skill.entryFingerprint)
@@ -107,6 +127,10 @@ class LocalSkillRepository(context: Context) : SkillRepository {
                             .put("type", step.action.type.name)
                             .put("target", step.action.targetTemplate ?: JSONObject.NULL)
                             .put("value", step.action.valueTemplate ?: JSONObject.NULL)
+                            .put("x", step.action.xRatio ?: JSONObject.NULL)
+                            .put("y", step.action.yRatio ?: JSONObject.NULL)
+                            .put("visual", step.action.visualFrameHash ?: JSONObject.NULL)
+                            .put("description", step.action.descriptionTemplate)
                             .put("retry", step.retryPolicy.maxAttempts)
                             .put("fallback", step.fallbackPolicy.name),
                     )
@@ -115,7 +139,7 @@ class LocalSkillRepository(context: Context) : SkillRepository {
         )
         .toString()
 
-    private fun decode(raw: String): AppSkill? = runCatching {
+    fun decode(raw: String): AppSkill? = runCatching {
         val json = JSONObject(raw)
         if (json.getInt("schema") != SCHEMA_VERSION) return null
         val parametersJson = json.getJSONArray("parameters")
@@ -144,6 +168,10 @@ class LocalSkillRepository(context: Context) : SkillRepository {
                             type = ActionType.valueOf(item.getString("type")),
                             targetTemplate = item.nullableString("target"),
                             valueTemplate = item.nullableString("value"),
+                            xRatio = if (item.isNull("x")) null else item.getDouble("x"),
+                            yRatio = if (item.isNull("y")) null else item.getDouble("y"),
+                            visualFrameHash = item.nullableString("visual"),
+                            descriptionTemplate = item.optString("description"),
                         ),
                         expectedAfterFingerprint = item.nullableString("after"),
                         retryPolicy = RetryPolicy(item.getInt("retry")),
@@ -156,6 +184,16 @@ class LocalSkillRepository(context: Context) : SkillRepository {
             skillId = json.getString("skill_id"),
             appId = json.getString("app_id"),
             taskType = json.getString("task_type"),
+            requestKey = json.optString("request_key"),
+            exitVisualFrameHash = json.nullableString("exit_visual"),
+            exitPackage = json.nullableString("exit_package"),
+            goalChecks = json.optJSONArray("goal_checks")?.let { checks ->
+                (0 until checks.length()).map { index ->
+                    val check = checks.getJSONObject(index)
+                    StoredGoalCheck(check.getString("selector"), check.nullableString("text_hash"),
+                        if (check.isNull("checked")) null else check.getBoolean("checked"))
+                }
+            }.orEmpty(),
             name = json.getString("name"),
             description = json.getString("description"),
             parameters = parameters,
@@ -178,12 +216,4 @@ class LocalSkillRepository(context: Context) : SkillRepository {
     private fun JSONObject.nullableLong(name: String): Long? =
         if (isNull(name)) null else getLong(name)
 
-    private fun key(skillId: String): String = KEY_PREFIX + skillId
-
-    companion object {
-        private const val PREFERENCES = "sonju_app_skills_v1"
-        private const val KEY_PREFIX = "skill_"
-        private const val SCHEMA_VERSION = 1
-        private const val MAX_SKILLS = 100
-    }
 }

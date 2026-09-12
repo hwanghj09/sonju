@@ -1,9 +1,11 @@
 package com.hwanghj09.sonju
 
 import com.hwanghj09.sonju.voice.WakeWordMatcher
+import com.hwanghj09.sonju.voice.VoiceControl
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,5 +48,19 @@ class WakeWordMatcherTest {
     @Test
     fun returnsNullWhenOnlyWakeWordWasSpoken() {
         assertNull(WakeWordMatcher.commandAfterWakeWord("손주야"))
+    }
+
+    @Test fun confirmationNeedsAnExplicitWholeReplyAndNegationAlwaysWins() {
+        listOf("네", "네, 진행해 주세요", "완료했어요", "계속해줘").forEach {
+            assertEquals(it, VoiceControl.Reply.CONFIRM, VoiceControl.confirmationReply(it))
+        }
+        listOf("아니요", "네 하지 마", "진행하지 마세요", "취소해줘", "손주야 멈춰").forEach {
+            assertEquals(it, VoiceControl.Reply.CANCEL, VoiceControl.confirmationReply(it))
+        }
+        listOf("네이버 열어줘", "네 전화번호가 뭐야", "내일", "", "아마도", "네 취소할까요").forEach {
+            assertNotEquals(it, VoiceControl.Reply.CONFIRM, VoiceControl.confirmationReply(it))
+        }
+        assertTrue(VoiceControl.isStopRequest("손 주 야, 멈춰!"))
+        assertFalse(VoiceControl.isStopRequest("멈춰라는 글자를 메모해줘"))
     }
 }

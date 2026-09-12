@@ -68,6 +68,7 @@ dependencies {
     implementation(libs.material)
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
+    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
     testImplementation(libs.junit)
     testImplementation(libs.json)
     androidTestImplementation(libs.androidx.espresso.core)

@@ -12,6 +12,8 @@ enum class ScrollDirection { UP, DOWN, LEFT, RIGHT }
 enum class ScrollAmount { SMALL, MEDIUM, LARGE }
 
 sealed interface PlannedAction {
+    data class SystemAction(val type: com.hwanghj09.sonju.agent.ActionType) : PlannedAction
+    data class SubmitText(val target: GroundingQuery, val value: String) : PlannedAction
     data class Click(val target: GroundingQuery) : PlannedAction
     data class SetText(
         val target: GroundingQuery,
@@ -24,6 +26,8 @@ sealed interface PlannedAction {
         val amount: ScrollAmount = ScrollAmount.MEDIUM,
     ) : PlannedAction
     data class OpenApp(val packageOrLabel: String) : PlannedAction
+    data class OpenUrl(val url: String) : PlannedAction
+    data class UserCheckpoint(val origin: String) : PlannedAction
     data object Back : PlannedAction
     data object Home : PlannedAction
     data class WaitFor(val condition: Predicate, val timeoutMs: Long) : PlannedAction
@@ -56,4 +60,3 @@ data class Plan(
 interface Planner {
     fun plan(task: CanonicalTask, screen: ScreenState, skills: List<AppSkill>): Plan?
 }
-
