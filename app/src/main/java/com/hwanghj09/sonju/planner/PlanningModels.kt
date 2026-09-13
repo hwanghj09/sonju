@@ -25,8 +25,8 @@ sealed interface PlannedAction {
         val direction: ScrollDirection,
         val amount: ScrollAmount = ScrollAmount.MEDIUM,
     ) : PlannedAction
-    data class OpenApp(val packageOrLabel: String) : PlannedAction
-    data class OpenUrl(val url: String) : PlannedAction
+    data class OpenApp(val packageOrLabel: String, val initialQuery: String? = null) : PlannedAction
+    data class OpenUrl(val url: String, val browserPackage: String? = null) : PlannedAction
     data class UserCheckpoint(val origin: String) : PlannedAction
     data object Back : PlannedAction
     data object Home : PlannedAction

@@ -33,7 +33,7 @@ class UserInterventionTest {
             assertFalse(run.resumeAfterUser(challenge, 600_000))
             assertTrue(run.resumeAfterUser(complete(), 600_000))
             assertTrue(run.canContinue(601_000))
-            assertFalse(run.canContinue(781_000))
+            assertFalse(run.canContinue(601_000 + AutonomySession.DEFAULT_MAX_DURATION_MILLIS))
             assertEquals(command, run.finalGoal)
             assertEquals(0, run.modelCallCount)
             assertEquals(ActionType.WAIT_FOR_USER, run.history.single().action.type)

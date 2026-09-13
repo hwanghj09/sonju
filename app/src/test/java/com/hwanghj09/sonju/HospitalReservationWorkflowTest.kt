@@ -148,7 +148,7 @@ class HospitalReservationWorkflowTest {
         assertFalse(run.canContinue(15_000))
         assertTrue(run.stopReason(15_000).orEmpty().contains("반복"))
         assertFalse(run.stopReason(15_000).orEmpty().contains("3분"))
-        assertTrue(AutonomySession(command, initial, 0).stopReason(181_000).orEmpty().contains("3분"))
+        assertTrue(AutonomySession(command, initial, 0).stopReason(AutonomySession.DEFAULT_MAX_DURATION_MILLIS + 1).orEmpty().contains("시간 한도"))
     }
 
     @Test fun loginWaitKeepsGoalAndBudgetAndCannotResumeFromLoginOrAnotherSite() {
@@ -161,7 +161,7 @@ class HospitalReservationWorkflowTest {
         assertEquals(command, run.finalGoal)
         assertTrue(run.resumeAfterUser(records(), 900_000))
         assertTrue(run.canContinue(901_000))
-        assertFalse(run.canContinue(1_081_000))
+        assertFalse(run.canContinue(901_000 + AutonomySession.DEFAULT_MAX_DURATION_MILLIS))
         assertEquals(ActionType.WAIT_FOR_USER, run.history.single().action.type)
         assertEquals(0, run.modelCallCount)
     }

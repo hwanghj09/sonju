@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--checked", action="append", default=[], metavar="RESOURCE_ID=true|false")
     parser.add_argument("--timeout", type=int, default=200)
     parser.add_argument("--no-model", action="store_true", help="Require a completed run with zero AI calls")
+    parser.add_argument("--min-tools", type=int, default=0, help="Require actual route execution, not only an already visible goal")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", args.name):
         parser.error("name must contain only letters, digits, underscores or hyphens")
@@ -107,6 +108,7 @@ def main():
                       source=metric[1] if metric else None, tools=int(metric[2]) if metric else None,
                       modelCalls=int(metric[3]) if metric else None,
                       passed=bool(verified) and package_ok and text_ok and state_ok and
+                      (args.min_tools == 0 or metric is not None and int(metric[2]) >= args.min_tools) and
                       (not args.no_model or metric is not None and metric[3] == "0"))
         (output / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(result, ensure_ascii=False), flush=True)

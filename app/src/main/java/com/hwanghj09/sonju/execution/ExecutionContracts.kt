@@ -25,6 +25,7 @@ enum class ExecutionFailureReason {
     VLM_FAILED,
     MODEL_FAILED,
     USER_CANCELLED,
+    DEVICE_LOCKED,
     UNSUPPORTED_FLOW,
     INTERNAL_ERROR,
 }
@@ -95,4 +96,3 @@ class BoundedLoopDetector(private val historyLimit: Int = 12) : LoopDetector {
 
     override fun reset() = history.clear()
 }
-

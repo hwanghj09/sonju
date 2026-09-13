@@ -401,6 +401,8 @@ data class AgentPlan(
     /** Exact image digest, assigned by local capture code; pixels are never stored in skills. */
     val visualFrameHash: String? = null,
     val visualFrameVerified: Boolean = false,
+    /** Untrusted suggestion; the runtime validates it against the offered local catalog. */
+    val skillReuse: com.hwanghj09.sonju.skill.SkillReuseSuggestion? = null,
 )
 
 data class GoalCheck(val selector: String, val text: String? = null, val checked: Boolean? = null) {

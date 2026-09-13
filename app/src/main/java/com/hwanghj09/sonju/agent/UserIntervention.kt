@@ -6,6 +6,7 @@ import java.text.Normalizer
 /** Local authentication checkpoint. Only its kind survives redaction; never a challenge or answer. */
 object UserIntervention {
     enum class Kind(val label: String) {
+        DEVICE_UNLOCK("기기 잠금 해제"),
         LOGIN("로그인"), BIOMETRIC("생체인식"), CAPTCHA("보안문자 확인"),
         IDENTITY("본인인증"), TWO_FACTOR("추가 인증"), OTHER("직접 확인"),
     }
@@ -50,8 +51,14 @@ object UserIntervention {
     }
 
     fun canResume(handoff: AutonomySession.UserHandoff, snapshot: UiSnapshot, command: String): Boolean {
-        if (snapshot.packageName != handoff.resumePackage || snapshot.treeTruncated ||
-            snapshot.screenFingerprint() == handoff.beforeFingerprint || required(snapshot, command) != null) return false
+        if (snapshot.treeTruncated) return false
+        val required = required(snapshot, command)
+        if (handoff.kind == Kind.DEVICE_UNLOCK) {
+            return required != Kind.DEVICE_UNLOCK && snapshot.packageName !in setOf("unknown", "com.android.systemui", "com.hwanghj09.sonju") &&
+                snapshot.elements.any { it.visible && it.enabled && !it.sensitive }
+        }
+        if (snapshot.screenFingerprint() == handoff.beforeFingerprint) return false
+        if (snapshot.packageName != handoff.resumePackage || required != null) return false
         if (HospitalReservationWorkflow.matches(command)) return HospitalReservationWorkflow.canResume(snapshot, command)
         if (handoff.origin != null && browserOrigin(snapshot) != handoff.origin) return false
         // A hidden browser address cannot establish which site the user returned to.
@@ -65,7 +72,7 @@ object UserIntervention {
     }
 
     /** Only browser-owned address controls establish an origin, never page labels or model output. */
-    fun browserLocation(snapshot: UiSnapshot): URI? {
+    fun browserLocation(snapshot: UiSnapshot, httpsOnly: Boolean = true): URI? {
         if (snapshot.packageName !in BROWSERS) return null
         return snapshot.elements.asSequence().filter { node -> node.visible && !node.sensitive &&
             node.viewId?.let { id -> id.startsWith("${snapshot.packageName}:id/") &&
@@ -74,7 +81,9 @@ object UserIntervention {
             val raw = node.text?.trim { it.isWhitespace() || it in ADDRESS_EDGE_MARKS }
                 ?.takeIf { it.length in 1..1_000 && ' ' !in it } ?: return@mapNotNull null
             runCatching { URI(if ("://" in raw) raw else "https://$raw") }.getOrNull()
-                ?.takeIf { it.scheme == "https" && !it.host.isNullOrBlank() && it.userInfo == null && it.port in setOf(-1, 443) }
+                ?.takeIf { !it.host.isNullOrBlank() && it.userInfo == null &&
+                    if (httpsOnly) it.scheme == "https" && it.port in setOf(-1, 443)
+                    else it.scheme in setOf("http", "https") && (it.port == -1 || it.port in 1..65535) }
         }.firstOrNull()
     }
 

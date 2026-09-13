@@ -32,6 +32,9 @@ class AutonomySession(
         val visualFrameHash: String? = null,
         val afterVisualFrameHash: String? = null,
         val notDispatched: Boolean = false,
+        val effectBarrier: Boolean = false,
+        val beforeObservation: UiSnapshot? = null,
+        val afterObservation: UiSnapshot? = null,
     )
 
     private val traces = mutableListOf<Trace>()
@@ -110,7 +113,8 @@ class AutonomySession(
         }
         if (!userConfirmed) {
             val fingerprint = snapshot.semanticTemplateFingerprint()
-            if (!handoff.automaticResume || fingerprint == handoff.resumeBaselineTemplateFingerprint) {
+            if (!handoff.automaticResume || handoff.kind != UserIntervention.Kind.DEVICE_UNLOCK &&
+                fingerprint == handoff.resumeBaselineTemplateFingerprint) {
                 resumeCandidate = null
                 return false
             }
@@ -144,6 +148,38 @@ class AutonomySession(
     data class SkillRepair(val skillId: String, val version: Int, val stepIndex: Int, val traceIndex: Int)
     var skillRepair: SkillRepair? = null
         private set
+    var boundSkillTask: com.hwanghj09.sonju.task.CanonicalTask? = null
+        private set
+    var offeredSkillIds: Set<String> = emptySet()
+    private var pendingSkillFailure: SkillRepair? = null
+    private var skillStepFailures = 0
+    private var recordedSkillFailure = false
+
+    fun bindSkill(skillId: String, task: com.hwanghj09.sonju.task.CanonicalTask, stepIndex: Int = 0) {
+        check(skillRepair == null)
+        boundSkillTask = task
+        selectSkill(skillId, stepIndex)
+        aiRecoveryRequested = false
+    }
+
+    /** Only a pre-dispatch failure gets one local retry; uncertain effects go straight to AI. */
+    fun failSkill(skillId: String, version: Int, reason: String, retryable: Boolean,
+                  traceIndex: Int = traces.size): Boolean {
+        if (skillRepair != null) return true
+        if (pendingSkillFailure == null) pendingSkillFailure = SkillRepair(skillId, version, nextSkillStep, traceIndex)
+        skillStepFailures++
+        if (retryable && skillStepFailures < 2) return false
+        skillRepair = pendingSkillFailure
+        requestAiRecovery(reason)
+        return true
+    }
+
+    fun consumeSkillFailure(): String? {
+        val failure = skillRepair ?: return null
+        if (recordedSkillFailure) return null
+        recordedSkillFailure = true
+        return failure.skillId
+    }
 
     fun selectSkill(skillId: String, stepIndex: Int = 0) {
         activeSkillId = skillId
@@ -288,6 +324,7 @@ class AutonomySession(
     }
 
     fun recordExecution(plan: AgentPlan, snapshot: UiSnapshot, result: ExecutionResult, resolvedNodeId: String? = null) {
+        if (result.failureReason == com.hwanghj09.sonju.execution.ExecutionFailureReason.DEVICE_LOCKED) return
         val proposed = plan.actions.firstOrNull { it.type != ActionType.FINISH } ?: return
         observe(snapshot)
         val node = snapshot.elements.firstOrNull { it.path == resolvedNodeId && !it.sensitive }
@@ -313,6 +350,9 @@ class AutonomySession(
             afterVisualFrameHash = result.afterVisualFrameHash,
             notDispatched = result.failureReason ==
                 com.hwanghj09.sonju.execution.ExecutionFailureReason.NODE_ACTION_FAILED,
+            effectBarrier = node?.checkable == true || proposed.value != null ||
+                plan.modelRisk >= RiskLevel.HIGH,
+            beforeObservation = snapshot,
         )
         visualProgressCredit = result.success && result.postconditionSatisfied == true &&
             plan.visualFrameHash != null && result.afterVisualFrameHash != null &&
@@ -326,9 +366,19 @@ class AutonomySession(
                 accessibilityFailures = 0
                 accessibilityModelAttempted = false
             }
-            if (plan.skillId == activeSkillId && plan.skillId != null) nextSkillStep++
+            if (plan.skillId == activeSkillId && plan.skillId != null) {
+                nextSkillStep++
+                pendingSkillFailure = null
+                skillStepFailures = 0
+            }
         } else if (result.failureReason != com.hwanghj09.sonju.execution.ExecutionFailureReason.USER_CANCELLED) {
-            plan.skillId?.let { beginSkillRepair(it, plan.skillVersion ?: 1, nextSkillStep, traces.lastIndex) }
+            val retryable = result.failureReason in setOf(
+                com.hwanghj09.sonju.execution.ExecutionFailureReason.GROUNDING_NOT_FOUND,
+                com.hwanghj09.sonju.execution.ExecutionFailureReason.NODE_ACTION_FAILED) &&
+                result.completedSteps == 0 && (result.afterFingerprint == null ||
+                result.beforeFingerprint == result.afterFingerprint)
+            if (plan.skillId != null && !failSkill(plan.skillId, plan.skillVersion ?: 1, result.message,
+                    retryable, traces.lastIndex)) return
             requestAiRecovery(result.message, action.type in ACCESSIBILITY_ACTIONS && result.failureReason in setOf(
                 com.hwanghj09.sonju.execution.ExecutionFailureReason.GROUNDING_NOT_FOUND,
                 com.hwanghj09.sonju.execution.ExecutionFailureReason.NODE_ACTION_FAILED,
@@ -354,6 +404,7 @@ class AutonomySession(
                 pending.beforeFingerprint != afterFingerprint ||
                 pending.afterVisualFrameHash?.let { it != pending.visualFrameHash } == true,
             afterTemplateFingerprint = snapshot.semanticTemplateFingerprint(),
+            afterObservation = snapshot,
         )
     }
 
@@ -363,7 +414,7 @@ class AutonomySession(
         userHandoff != null -> "직접 확인이 끝날 때까지 요청을 보관하고 기다리고 있어요."
         toolCallCount >= maxToolCalls -> "도구 실행 횟수 한도에 도달해 멈췄어요."
         nowMillis - startedAtMillis - pausedDurationMillis !in 0..maxDurationMillis ->
-            "사용자 확인 대기를 제외한 실행 시간이 3분을 넘어 멈췄어요."
+            "사용자 확인 대기를 제외한 실행 시간 한도에 도달해 멈췄어요."
         hasDetectedLoop() -> "같은 동작이 반복되어 멈췄어요. 현재 화면을 다시 확인해야 합니다."
         else -> null
     }
@@ -397,6 +448,17 @@ class AutonomySession(
         .filterNot { it.type in setOf(ActionType.WAIT, ActionType.FINISH) }
         .toList()
 
+    fun failedClickPaths(snapshot: UiSnapshot): Set<String> {
+        observeRecoveryScreen(snapshot)
+        val forbidden = discouragedActionSignatures()
+        if (forbidden.isEmpty()) return emptySet()
+        return snapshot.elements.mapNotNullTo(mutableSetOf()) { node ->
+            val action = AgentAction(ActionType.CLICK, "", node.path)
+            val path = UiTargetResolver.resolveClickable(action, snapshot)?.clickablePath ?: return@mapNotNullTo null
+            node.path.takeIf { actionSignature(canonicalAction(action.copy(target = path), snapshot)) in forbidden }
+        }
+    }
+
     fun plannerContext(snapshot: UiSnapshot, learnedRouteHint: String?): String {
         observe(snapshot)
         val discouraged = discouragedActionSignatures()
@@ -404,6 +466,10 @@ class AutonomySession(
             appendLine("고정 최종 목표: ${finalGoal.take(MAX_PLAN_FIELD_LENGTH)}")
             appendLine("로컬 계획 리비전: $revision")
             if (recoveryReason.isNotBlank()) appendLine("재계획 필수: $recoveryReason")
+            if (discouraged.isNotEmpty()) {
+                appendLine("실행 금지: 아래 동작은 이미 반복 실패했다. 다른 입력란·도구·경로를 선택한다.")
+                discouraged.forEach { appendLine("- $it") }
+            }
             appendLine("남은 도구: ${maxToolCalls - toolCallCount}, 남은 모델 호출: ${MAX_MODEL_CALLS - modelCalls}")
             skillRepair?.let { appendLine("AppSkill 복구: ${it.skillId}, 실패 단계 ${it.stepIndex + 1}. 현재 화면부터 목표까지 완료한다.") }
             lastPlan?.let { plan ->
@@ -438,19 +504,15 @@ class AutonomySession(
                     )
                 }
             }
-            if (discouraged.isNotEmpty()) {
-                appendLine("같은 화면에서 반복 실패하여 다른 도구/대상을 써야 하는 동작:")
-                discouraged.forEach { appendLine("- $it") }
-            }
         }.take(MAX_CONTEXT_LENGTH)
     }
 
     companion object {
         const val USER_RESUME_SETTLE_MILLIS = 1_200L
         private val PACKAGE_NAME = Regex("[a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z][a-zA-Z0-9_]*)+")
-        const val DEFAULT_MAX_TOOL_CALLS = 24
-        const val DEFAULT_MAX_DURATION_MILLIS = 180_000L
-        private const val MAX_MODEL_CALLS = 24
+        const val DEFAULT_MAX_TOOL_CALLS = 60
+        const val DEFAULT_MAX_DURATION_MILLIS = 600_000L
+        private const val MAX_MODEL_CALLS = 40
         private const val MAX_VISUAL_CALLS = 6
         private val ACCESSIBILITY_ACTIONS = setOf(ActionType.CLICK, ActionType.SET_TEXT,
             ActionType.SUBMIT_TEXT, ActionType.SCROLL_UP, ActionType.SCROLL_DOWN,

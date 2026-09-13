@@ -1054,7 +1054,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             returnToPreviousApp = shouldReturn,
         ) { result ->
             executionSession?.recordExecution(plan, snapshot, result)
-            architectureRuntime.recordExecution(command, verifiedPlan, result)
+            architectureRuntime.recordExecution(command, verifiedPlan, result, executionSession)
             val adaptivePlan = plan.continueAfterAction || plan.source in setOf(
                 PlanSource.SKILL_FAST_PATH,
                 PlanSource.OPENAI_STRUCTURE,

@@ -224,6 +224,10 @@ object ScreenContextHandoff {
             element.path == clickPath && element.visible && element.enabled && !element.sensitive &&
                 (element.clickable || UiNodeAction.CLICK in element.availableActions)
         } ?: return null
+        // An explicit verifier-bound path is still exact on the same complete revision, even
+        // when two blank clickable wrappers have identical descendant labels.
+        if (expected.epoch == live.epoch && expected.hasSameContentIgnoringLayoutAs(live) &&
+            live.elements.singleOrNull { it.path == clickPath }?.bounds == target.bounds) return clickPath
         val expectedLabels = descendantLabels(expected, target.path)
         val expectedViewId = target.viewId?.takeIf(String::isNotBlank)
         if (expectedLabels.isEmpty() && expectedViewId == null) return null

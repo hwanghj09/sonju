@@ -1042,16 +1042,10 @@ class SonjuAccessibilityService : AccessibilityService() {
         overlayOpenAiPlanner.cancelPending()
         showVoicePanelWorking("현재 화면에서 안전한 실행 방법을 확인하고 있어요…")
 
-        val hospitalRequest = com.hwanghj09.sonju.agent.HospitalReservationWorkflow.matches(command)
-        com.hwanghj09.sonju.agent.HospitalReservationWorkflow.unsupportedReason(command)?.let { reason ->
-            finishAutonomyAttempt()
-            deliverScreenExplanation(reason)
-            return
-        }
+        val hospitalRequest = com.hwanghj09.sonju.agent.HospitalReservationWorkflow.supports(command)
         debugTrace("request purpose=${com.hwanghj09.sonju.task.RequestInterpreter.understand(command).purpose} " +
             "hospital=${com.hwanghj09.sonju.agent.HospitalReservationWorkflow.siteFor(command)?.id}")
         val explanationRequest = ScreenExplainer.isExplanationRequest(command)
-        val appWorkflowRoute = resolveAppWorkflowRoute(command)
         val context = if (fromOverlay) consumePendingOverlayContext() else null
         if (fromOverlay && context == null) {
             if (pendingGoal == command) {
@@ -1064,17 +1058,16 @@ class SonjuAccessibilityService : AccessibilityService() {
             return
         }
         val snapshot = context?.snapshot ?: currentApplicationPlaceholder()
-        val contextFreePlan = if (fromOverlay || hospitalRequest || pendingGoal == command || userResumeRequested) {
-            null
-        } else {
-            planWithoutCurrentScreen(command, snapshot, appWorkflowRoute)
-        }
-        if (!fromOverlay && (contextFreePlan == null ||
-                autonomySession?.takeIf { it.finalGoal == command }?.needsFreshObservation == true)) {
+        if (!fromOverlay) {
             startOverlayCaptureForCommand(command)
             return
         }
         activeFeedbackSnapshot = snapshot
+        if (explanationRequest && snapshot.userIntervention == com.hwanghj09.sonju.agent.UserIntervention.Kind.DEVICE_UNLOCK) {
+            finishAutonomyAttempt()
+            deliverScreenExplanation("휴대폰 잠금을 직접 해제한 다음 화면 설명을 요청해 주세요.")
+            return
+        }
         if (explanationRequest) {
             val appLabel = runCatching {
                 @Suppress("DEPRECATION")
@@ -1176,13 +1169,14 @@ class SonjuAccessibilityService : AccessibilityService() {
         }
         // All human checkpoints share the same local path, before cached actions or model calls.
         com.hwanghj09.sonju.agent.UserIntervention.plan(command, snapshot)?.let { handoff ->
-            val checkpoint = architectureRuntime.fastPathPlan(command, snapshot, session)
+            val checkpoint = (if (snapshot.userIntervention == com.hwanghj09.sonju.agent.UserIntervention.Kind.DEVICE_UNLOCK) null
+                else architectureRuntime.fastPathPlan(command, snapshot, session))
                 ?.takeIf { it.actions.singleOrNull { action -> action.type != ActionType.FINISH }?.type == ActionType.WAIT_FOR_USER }
                 ?.let { it.copy(actions = it.actions.filterNot { action -> action.type == ActionType.FINISH }) }
             handleOverlayPlan(command, snapshot, checkpoint ?: handoff)
             return
         }
-        if (hospitalRequest) {
+        if (hospitalRequest && session.modelCallCount > 0) {
             val workflow = com.hwanghj09.sonju.agent.HospitalReservationWorkflow
             workflow.completionPlan(command, snapshot)?.let {
                 handleOverlayPlan(command, snapshot, it)
@@ -1193,82 +1187,6 @@ class SonjuAccessibilityService : AccessibilityService() {
         if (fastPathPlan != null) {
             handleOverlayPlan(command, snapshot, fastPathPlan)
             return
-        }
-        if (hospitalRequest) {
-            val workflow = com.hwanghj09.sonju.agent.HospitalReservationWorkflow
-            if (workflow.shouldOpenPage(session, snapshot)) {
-                handleOverlayPlan(command, snapshot, workflow.entryPlan(command))
-            } else if (!retryTransientPlanning(command, MAX_LOADING_PLANNING_RETRIES)) {
-                finishAutonomyAttempt()
-                deliverScreenExplanation("공식 예약현황을 열었지만 조회 결과를 아직 확인하지 못했어요. 현재 병원 화면을 확인해 주세요.")
-            }
-            return
-        }
-        if (!session.aiRecoveryRequested) {
-            if (contextFreePlan != null) {
-                handleOverlayPlan(command, snapshot, contextFreePlan)
-                return
-            }
-            val baeminPlan = BaeminOrderLocalPlanner.plan(command, snapshot)
-            if (baeminPlan != null) {
-                handleOverlayPlan(command, snapshot, baeminPlan)
-                return
-            }
-            val appEntryPlan = appWorkflowRoute?.let { route ->
-                AppWorkflowRouter.entryPlan(
-                    command = command,
-                    route = route,
-                    currentPackage = snapshot.packageName,
-                    targetPackage = resolveInstalledAppPackage(route.appLabel),
-                )
-            }
-            if (appEntryPlan != null) {
-                handleOverlayPlan(command, snapshot, appEntryPlan)
-                return
-            }
-            val inAppPlan = appWorkflowRoute?.let { route ->
-                AppWorkflowRouter.inAppPlan(
-                    command,
-                    route,
-                    snapshot,
-                    successfulActions = session.successfulActions(),
-                )
-            }
-            debugTrace(
-                "workflow decision goal=${inAppPlan?.goalCompleted} " +
-                    "action=${inAppPlan?.actions?.firstOrNull()?.type} " +
-                    "target=${!inAppPlan?.actions?.firstOrNull()?.target.isNullOrBlank()} " +
-                    "truncated=${snapshot.treeTruncated} " +
-                    "sensitive=${snapshot.elements.count { it.visible && it.sensitive }} " +
-                    "loading=${ScreenContextHandoff.hasVisibleLoadingIndicator(snapshot)} " +
-                    "reason=${inAppPlan?.revisionReason?.take(120)}",
-            )
-            if (inAppPlan != null) {
-                handleOverlayPlan(command, snapshot, inAppPlan)
-                return
-            }
-            val localPlan = if (appWorkflowRoute == null) {
-                RuleBasedPlanner.plan(command, snapshot)
-            } else {
-                null
-            }
-            if (localPlan != null) {
-                handleOverlayPlan(command, snapshot, localPlan)
-                return
-            }
-            val transientRetryLimit = if (ScreenContextHandoff.hasVisibleLoadingIndicator(snapshot)) {
-                MAX_LOADING_PLANNING_RETRIES
-            } else {
-                MAX_TRANSIENT_PLANNING_RETRIES
-            }
-            if (appWorkflowRoute != null &&
-                ScreenContextHandoff.shouldWaitForStableReplan(
-                    attempt = transientPlanningRetryCount,
-                    maxRetries = transientRetryLimit,
-                ) && retryTransientPlanning(command, transientRetryLimit)
-            ) {
-                return
-            }
         }
         if (session.visualFallbackActive && tryVisualCommandFallback(command, snapshot)) return
         if (ScreenContextHandoff.hasUnobservedRenderedContent(snapshot) &&
@@ -1310,7 +1228,8 @@ class SonjuAccessibilityService : AccessibilityService() {
                 if (generation != overlayCommandGeneration || voicePanel == null) return@post
                 result.fold(
                     onSuccess = { plan ->
-                        handleOverlayPlan(command, snapshot, plan)
+                        val reused = architectureRuntime.reuseSuggestedSkill(command, plan, snapshot, session)
+                        handleOverlayPlan(command, snapshot, reused ?: plan)
                     },
                     onFailure = {
                         if (!retryTransientPlanning(command)) {
@@ -1333,14 +1252,17 @@ class SonjuAccessibilityService : AccessibilityService() {
             }
         }
         debugTrace("model request mode=${if (screenshot == null) "accessibility" else "visual"} call=${session.modelCallCount}")
-        val plannerContext = session.plannerContext(snapshot, learnedRouteHint)
+        val plannerContext = session.plannerContext(snapshot, learnedRouteHint) + "\n" +
+            architectureRuntime.skillPlannerContext(command, snapshot, session)
         if (screenshot != null) {
             val imageContext = plannerContext + "\n첨부 원본 이미지 전체 크기: ${screenshot.width}px × ${screenshot.height}px."
-            overlayOpenAiPlanner.planScreenshotAsync(command, snapshot, screenshot.jpegBase64, imageContext, callback)
+            overlayOpenAiPlanner.planScreenshotAsync(command, snapshot, screenshot.jpegBase64, imageContext, callback,
+                session.failedClickPaths(snapshot))
         } else {
             session.recordAccessibilityModelAttempt(snapshot)
             overlayOpenAiPlanner.planAsync(command, snapshot, null,
-                userFeedbackMemory.guidance(command, snapshot.packageName), plannerContext, callback)
+                userFeedbackMemory.guidance(command, snapshot.packageName), plannerContext,
+                session.failedClickPaths(snapshot), callback)
         }
     }
 
@@ -1647,29 +1569,6 @@ class SonjuAccessibilityService : AccessibilityService() {
         )
     }
 
-    private fun planWithoutCurrentScreen(
-        command: String,
-        snapshot: UiSnapshot,
-        appWorkflowRoute: AppWorkflowRoute?,
-    ): AgentPlan? {
-        val candidates = buildList {
-            BaeminOrderLocalPlanner.plan(command, snapshot)?.let(::add)
-            appWorkflowRoute?.let { route ->
-                AppWorkflowRouter.entryPlan(
-                    command = command,
-                    route = route,
-                    currentPackage = snapshot.packageName,
-                    targetPackage = resolveInstalledAppPackage(route.appLabel),
-                )?.let(::add)
-            }
-            if (appWorkflowRoute == null) RuleBasedPlanner.plan(command, snapshot)?.let(::add)
-        }
-        return candidates.firstOrNull { plan ->
-            val action = plan.actions.singleOrNull { it.type != ActionType.FINISH }
-            action?.type in SCREEN_INDEPENDENT_ACTIONS
-        }
-    }
-
     private fun startOverlayCaptureForCommand(command: String) {
         if (overlayCaptureInProgress) {
             overlayVoiceCommand = command
@@ -1900,7 +1799,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             )
             autonomySession?.takeIf { it.finalGoal == command }
                 ?.recordExecution(plan, snapshot, result, verifiedPlan.actions.values.singleOrNull()?.resolvedNodeId)
-            architectureRuntime.recordExecution(command, verifiedPlan, result)
+            architectureRuntime.recordExecution(command, verifiedPlan, result, autonomySession)
             if (result.success &&
                 (plan.continueAfterAction || shouldVerifyGoalAfterAction(plan))
             ) {
@@ -2078,6 +1977,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         plan: AgentPlan,
         result: ExecutionResult,
     ): Boolean {
+        if (result.failureReason == ExecutionFailureReason.DEVICE_LOCKED) return true
         // A dispatched timer may already be running even when its UI cannot be read. Never create
         // another timer as recovery; the user receives the unverified result instead.
         if (plan.actions.any { it.type == ActionType.START_TIMER }) return false
@@ -2452,6 +2352,10 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
 
     private fun snapshotWithTrustedRoute(snapshot: UiSnapshot): UiSnapshot {
+        if (getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true) {
+            return snapshot.copy(trustedSettingsRoute = null,
+                userIntervention = com.hwanghj09.sonju.agent.UserIntervention.Kind.DEVICE_UNLOCK)
+        }
         // Route provenance is capability-like data. Never trust a route carried by an old cache;
         // attach it again only while the matching, freshly established Settings context is live.
         val untrustedSnapshot = if (snapshot.trustedSettingsRoute == null) {
@@ -2644,6 +2548,11 @@ class SonjuAccessibilityService : AccessibilityService() {
         callback: (ExecutionResult) -> Unit,
     ) {
         val plan = verifiedPlan.plan
+        if (getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true) {
+            callback(ExecutionResult(false, "휴대폰 잠금 해제를 기다립니다.", 0,
+                failureReason = ExecutionFailureReason.DEVICE_LOCKED))
+            return
+        }
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "Accessibility execution must start on the main thread"
         }
@@ -4073,9 +3982,8 @@ class SonjuAccessibilityService : AccessibilityService() {
                 action.type == ActionType.START_TIMER ->
                     timerRemaining != null && timerBaseline != null && timerRemaining < timerBaseline
                 action.type == ActionType.OPEN_URL -> afterSnapshot?.let {
-                    val workflow = com.hwanghj09.sonju.agent.HospitalReservationWorkflow
                     // Domain arrival proves navigation; the next observation separately verifies login/results.
-                    workflow.isExpectedDestination(action.target, it)
+                    com.hwanghj09.sonju.verifier.WebNavigationPolicy.arrived(action.target, it)
                 } == true
                 expectedScreenFingerprint != null ->
                     afterSnapshot?.semanticTemplateFingerprint() == expectedScreenFingerprint &&
@@ -4238,8 +4146,12 @@ class SonjuAccessibilityService : AccessibilityService() {
                     .putExtra(AlarmClock.EXTRA_SKIP_UI, false)
             }
             ActionType.OPEN_URL -> action.target?.takeIf {
-                com.hwanghj09.sonju.agent.HospitalReservationWorkflow.isReviewedUrl(it)
-            }?.let { Intent(Intent.ACTION_VIEW, Uri.parse(it)).addCategory(Intent.CATEGORY_BROWSABLE) }
+                com.hwanghj09.sonju.verifier.WebNavigationPolicy.allows(it)
+            }?.let { url ->
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).apply {
+                    action.value?.let { setPackage(it) }
+                }
+            }
             ActionType.OPEN_WIFI_SETTINGS -> Intent(Settings.ACTION_WIFI_SETTINGS)
             ActionType.OPEN_SOUND_SETTINGS -> Intent(Settings.ACTION_SOUND_SETTINGS)
             ActionType.OPEN_ACCESSIBILITY_SETTINGS -> Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)

@@ -16,9 +16,12 @@ import com.hwanghj09.sonju.skill.FastPathPlanner
 import com.hwanghj09.sonju.skill.LocalSkillRepository
 import com.hwanghj09.sonju.skill.SkillLearner
 import com.hwanghj09.sonju.skill.SkillRepository
-import com.hwanghj09.sonju.skill.SkillRetriever
 import com.hwanghj09.sonju.skill.SkillStatus
 import com.hwanghj09.sonju.skill.StoredGoalCheck
+import com.hwanghj09.sonju.skill.AppSkill
+import com.hwanghj09.sonju.skill.SkillRequestPattern
+import com.hwanghj09.sonju.skill.skillFingerprint
+import com.hwanghj09.sonju.skill.targetIdentity
 import com.hwanghj09.sonju.task.CanonicalTask
 import com.hwanghj09.sonju.task.DeterministicTaskCanonicalizer
 import com.hwanghj09.sonju.task.DeterministicTaskParser
@@ -45,22 +48,65 @@ class SonjuAgentRuntime private constructor(
     private val installedAppLabels: () -> Collection<String>? = { null },
 ) {
     private val taskCache = TaskCanonicalizationCache()
-    private val skillRetriever = SkillRetriever(skillRepository)
     private val fastPathPlanner = FastPathPlanner()
     private val goalEvaluator = DeterministicGoalEvaluator()
     private val visualFallbackPolicy = VisualFallbackPolicy()
     private val sessionIds = linkedMapOf<String, String>()
 
     fun fastPathPlan(command: String, snapshot: UiSnapshot, session: AutonomySession? = null): AgentPlan? {
+        if (session != null && session.finalGoal != command) return null
         if (session?.aiRecoveryRequested == true) return null
-        val screen = AccessibilityScreenParser.parse(snapshot)
-        val task = canonicalTask(command, session?.initialSnapshot?.let(AccessibilityScreenParser::parse) ?: screen)
-        val skills = skillRetriever.retrieve(task, screen)
+        val observedScreen = AccessibilityScreenParser.parse(snapshot)
+        val requestedTask = canonicalTask(command, observedScreen)
+        fun bind(skill: AppSkill): CanonicalTask? {
+            if (skill.appId != "any" && requestedTask.appId != "any" && requestedTask.appId != skill.appId) return null
+            // Exact request spans also bind overlapping parameters introduced during repair.
+            // They must never be applied to a different request, even one of the same length.
+            val exact = if (skill.requestKey == requestedTask.requestKey) skill.parameters.mapNotNull { parameter ->
+                val text = requestedTask.requestText.orEmpty()
+                val start = parameter.requestStart
+                val end = parameter.requestEnd
+                val value = requestedTask.parameters[parameter.name] ?: if (start != null && end != null &&
+                    start in 0..text.length && end in start..text.length) {
+                    com.hwanghj09.sonju.task.TaskParameter(parameter.name, text.substring(start, end))
+                } else null
+                value?.let { parameter.name to it }
+            }.toMap().takeIf { it.size == skill.parameters.size } else null
+            val parameters = exact ?: skill.requestPatterns.mapNotNull { it.bind(command) }.distinct().singleOrNull()
+                ?: requestedTask.parameters.takeIf { skill.requestKey == requestedTask.requestKey &&
+                    skill.canonicalTaskKey == requestedTask.key } ?: return null
+            if (parameters.keys != skill.parameters.map { it.name }.toSet()) return null
+            val intent = SkillRequestPattern.intent(command, parameters)
+            if (skill.goalParameterKey != null && (skill.completionLevel != intent.requestedCompletionLevel ||
+                    skill.constraintKey != SkillRequestPattern.digest(intent.constraints.toString()))) return null
+            return requestedTask.copy(appId = skill.appId, taskType = skill.taskType,
+                parameters = parameters, requestKey = skill.requestKey)
+        }
+        val candidates = if (session?.activeSkillId != null) {
+            listOfNotNull(skillRepository.get(session.activeSkillId!!)?.let { skill ->
+                (session.boundSkillTask ?: bind(skill))?.let { skill to it }
+            })
+        } else skillRepository.all().filter { it.status != SkillStatus.DISABLED }.mapNotNull { skill ->
+            bind(skill)?.let { skill to it }
+        }.sortedWith(compareByDescending<Pair<AppSkill, CanonicalTask>> { it.first.requestKey == requestedTask.requestKey }
+            .thenByDescending { it.first.confidence })
+        val selected = candidates.firstOrNull { (skill, task) ->
+            session?.activeSkillId == skill.skillId || skill.steps.firstOrNull()?.action?.type in APP_ENTRY_ACTIONS ||
+                skill.entryFingerprint == fingerprint(skill, task, snapshot) ||
+                skill.steps.withIndex().any { (index, step) ->
+                    step.entryFingerprint == fingerprint(skill, task, snapshot) &&
+                        skill.steps.take(index).all { it.action.type in APP_ENTRY_ACTIONS }
+                } || completionEvidenceMatches(skill, task, snapshot)
+        } ?: candidates.singleOrNull { it.first.status in setOf(SkillStatus.SUSPECT, SkillStatus.NEEDS_REPAIR) }
+            ?: return null
+        // Two different reusable workflows fitting the same request are not a local decision.
+        if (session?.activeSkillId == null && selected.first.requestKey != requestedTask.requestKey &&
+            candidates.map { it.first.skillId }.distinct().size > 1) return null
+        val (skill, task) = selected
+        val screen = observedScreen.copy(fingerprint = fingerprint(skill, task, snapshot))
         val canCompleteFromObservation = task.taskType in OBSERVATIONAL_TASKS ||
             com.hwanghj09.sonju.task.RequestInterpreter.isReadOnlyLookup(command)
-        fun goalMatches(skill: com.hwanghj09.sonju.skill.AppSkill): Boolean =
-            !snapshot.treeTruncated && skill.exitPackage == snapshot.packageName &&
-                skill.goalChecks.isNotEmpty() && skill.goalChecks.all { it.resolve(snapshot) != null }
+        fun goalMatches(skill: AppSkill): Boolean = completionEvidenceMatches(skill, task, snapshot)
         fun entryIndex(skill: com.hwanghj09.sonju.skill.AppSkill): Int? {
             if (canCompleteFromObservation && goalMatches(skill)) return skill.steps.size
             if (skill.entryFingerprint == screen.fingerprint) return 0
@@ -69,29 +115,35 @@ class SonjuAgentRuntime private constructor(
             return skill.steps.withIndex().filter { (index, step) ->
                 step.entryFingerprint == screen.fingerprint &&
                     skill.steps.take(index).all { it.action.type in APP_ENTRY_ACTIONS }
-            }.singleOrNull()?.index
+            }.singleOrNull()?.index ?: 0.takeIf { skill.steps.firstOrNull()?.action?.type in APP_ENTRY_ACTIONS }
         }
-        val skill = session?.activeSkillId?.let(skillRepository::get) ?: skills.firstOrNull {
-            (it.status == SkillStatus.ACTIVE && entryIndex(it) != null) ||
-                (it.status != SkillStatus.DISABLED && canCompleteFromObservation && goalMatches(it))
-        } ?: return null
         val index = if (canCompleteFromObservation && goalMatches(skill)) skill.steps.size
             else if (session?.activeSkillId == skill.skillId) session.nextSkillStep
-            else entryIndex(skill) ?: return null
+            else entryIndex(skill) ?: 0
         if (session != null && (session.activeSkillId == null || index == skill.steps.size)) {
-            session.selectSkill(skill.skillId, index)
+            session.bindSkill(skill.skillId, task, index)
         }
-        val plan = fastPathPlanner.planStep(task, screen, skill, index, goalMatches(skill))
+        if (skill.status != SkillStatus.ACTIVE && session != null) {
+            session.beginSkillRepair(skill.skillId, skill.version, index)
+            session.requestAiRecovery("이전에 실패한 AppSkill입니다. 현재 화면에서 경로를 복구하세요.")
+            return null
+        }
+        val storedStep = skill.steps.getOrNull(index)
+        val sameControlAfterVerifiedStep = session?.activeSkillId == skill.skillId && index > 0 &&
+            session.history.lastOrNull()?.succeeded == true && storedStep?.entryPackage == snapshot.packageName &&
+            storedStep.targetIdentityHash != null &&
+            storedStep.targetIdentityHash == storedStep.action.targetIdentity(snapshot, task.parameters)
+        val plan = fastPathPlanner.planStep(task, screen, skill, index, goalMatches(skill),
+            index == 0 && skill.steps.firstOrNull()?.action?.type in APP_ENTRY_ACTIONS || sameControlAfterVerifiedStep)
         if (plan == null) {
             session?.let {
                 it.beginSkillRepair(skill.skillId, skill.version, index)
                 it.requestAiRecovery("저장된 skill의 다음 화면 또는 입력 조건이 달라졌습니다.")
-                skillRepository.markFailure(skill.skillId)
+                it.consumeSkillFailure()?.let(skillRepository::markFailure)
             }
             return null
         }
-        val storedStep = skill.steps.getOrNull(index)
-        val checks = if (plan.complete) skill.goalChecks.mapNotNull { it.resolve(snapshot) } else emptyList()
+        val checks = if (plan.complete) skill.goalChecks.mapNotNull { it.resolve(snapshot, task.parameters) } else emptyList()
         return AgentPlan(
             goal = command,
             summary = if (plan.complete) {
@@ -122,12 +174,62 @@ class SonjuAgentRuntime private constructor(
             skillVersion = skill.version,
             // The final transition is followed by concrete goal checks. Focus/toolbar changes
             // must not reject a correct result before those checks can inspect it.
-            expectedScreenFingerprint = if (storedStep != null && index == skill.steps.lastIndex &&
+            expectedScreenFingerprint = if (sameControlAfterVerifiedStep || skill.parameterizedScreens && task.parameters.isNotEmpty() ||
+                storedStep != null && index == skill.steps.lastIndex &&
                 skill.goalChecks.isNotEmpty()) null else storedStep?.expectedAfterFingerprint ?: skill.exitFingerprint,
             goalChecks = checks,
             visualFrameHash = if (plan.complete) skill.exitVisualFrameHash else storedStep?.action?.visualFrameHash,
             visualFallback = storedStep?.action?.let { it.type == ActionType.CLICK_COORDINATE || it.visualFrameHash != null } == true,
         )
+    }
+
+    private fun fingerprint(skill: AppSkill, task: CanonicalTask, snapshot: UiSnapshot): String =
+        if (skill.parameterizedScreens) snapshot.skillFingerprint(task.parameters) else snapshot.semanticTemplateFingerprint()
+
+    private fun completionEvidenceMatches(skill: AppSkill, task: CanonicalTask, snapshot: UiSnapshot): Boolean {
+        val covered = skill.goalChecks.mapNotNull { it.textTemplate?.removePrefix("${'$'}{")?.removeSuffix("}") }.toSet()
+        val parametersVerified = skill.goalParameterKey == null ||
+            skill.goalParameterKey == SkillRequestPattern.parameterKey(task.parameters) ||
+            task.parameters.isNotEmpty() && covered.containsAll(task.parameters.keys)
+        return parametersVerified && !snapshot.treeTruncated && skill.exitPackage == snapshot.packageName &&
+            skill.goalChecks.isNotEmpty() && skill.goalChecks.all { it.resolve(snapshot, task.parameters) != null }
+    }
+
+    /** Small, value-free route catalog lets one AI call recognize an unseen paraphrase. */
+    fun skillPlannerContext(command: String, snapshot: UiSnapshot, session: AutonomySession): String {
+        if (session.skillRepair != null || session.toolCallCount > 0) return ""
+        val task = canonicalTask(command, AccessibilityScreenParser.parse(snapshot))
+        val candidates = skillRepository.all().filter { it.status == SkillStatus.ACTIVE &&
+            it.goalParameterKey != null }
+            .sortedWith(compareByDescending<AppSkill> { task.appId != "any" && it.appId == task.appId }
+                .thenByDescending { it.exitPackage == snapshot.packageName }
+                .thenByDescending { it.successCount }).take(8)
+        session.offeredSkillIds = candidates.mapTo(mutableSetOf()) { it.skillId }
+        return candidates.joinToString("\n", prefix = "재사용 가능한 검증 경로(관찰 데이터):\n") { skill ->
+            "id=${skill.skillId}; app=${skill.appId}; task=${skill.taskType}; " +
+                "parameters=${skill.parameters.joinToString { it.name }}; route=" +
+                skill.steps.take(12).joinToString(" -> ") { "${it.action.type}(${it.action.targetTemplate.orEmpty().take(80)},${it.action.valueTemplate.orEmpty()})" }
+        }.take(6_000)
+    }
+
+    fun reuseSuggestedSkill(command: String, candidate: AgentPlan, snapshot: UiSnapshot,
+                           session: AutonomySession): AgentPlan? {
+        val suggestion = candidate.skillReuse ?: return null
+        if (session.skillRepair != null || session.toolCallCount != 0 || suggestion.skillId !in session.offeredSkillIds ||
+            candidate.source !in setOf(PlanSource.OPENAI_STRUCTURE, PlanSource.OPENAI_SEMANTIC_MAP)) return null
+        val skill = skillRepository.get(suggestion.skillId)?.takeIf { it.status == SkillStatus.ACTIVE } ?: return null
+        val request = SkillRequestPattern.normalizeRequest(command)
+        if (suggestion.parameters.keys != skill.parameters.map { it.name }.toSet() ||
+            suggestion.parameters.values.any { it.isBlank() || !request.contains(it) }) return null
+        val task = canonicalTask(command, AccessibilityScreenParser.parse(snapshot))
+        if (skill.appId != "any" && task.appId != "any" && task.appId != skill.appId) return null
+        val parameters = suggestion.parameters.mapValues { (name, value) -> com.hwanghj09.sonju.task.TaskParameter(name, value) }
+        val intent = SkillRequestPattern.intent(command, parameters)
+        if (intent.requestedCompletionLevel != skill.completionLevel ||
+            SkillRequestPattern.digest(intent.constraints.toString()) != skill.constraintKey) return null
+        session.bindSkill(skill.skillId, task.copy(appId = skill.appId, taskType = skill.taskType,
+            requestKey = skill.requestKey, parameters = parameters))
+        return fastPathPlan(command, snapshot, session)
     }
 
     fun verify(
@@ -149,11 +251,12 @@ class SonjuAgentRuntime private constructor(
         session: AutonomySession? = null,
     ): Boolean {
         if (session?.userHandoff != null || UserIntervention.required(snapshot, command) != null) return false
-        if (HospitalReservationWorkflow.matches(command)) {
+        if (HospitalReservationWorkflow.supports(command)) {
             return plan.goalCompleted && HospitalReservationWorkflow.resultText(snapshot, command) != null
         }
         val screen = AccessibilityScreenParser.parse(snapshot)
-        val task = canonicalTask(command, screen)
+        val task = if (plan.source == PlanSource.SKILL_FAST_PATH) session?.boundSkillTask ?: canonicalTask(command, screen)
+            else canonicalTask(command, screen)
         if (task.taskType != "open_app" && ScreenContextHandoff.hasUnobservedRenderedContent(snapshot) &&
             !plan.visualFrameVerified) return false
         if (plan.source == PlanSource.SKILL_FAST_PATH) {
@@ -162,9 +265,10 @@ class SonjuAgentRuntime private constructor(
                 session.nextSkillStep == skill.steps.size && plan.skillVersion == skill.version &&
                 skill.requestKey == task.requestKey && !snapshot.treeTruncated &&
                 (skill.exitPackage?.let { it == snapshot.packageName } ?: (screen.fingerprint == skill.exitFingerprint))
-            val checksMatch = skill.goalChecks.isNotEmpty() && skill.goalChecks.all { it.resolve(snapshot) != null }
+            val checksMatch = completionEvidenceMatches(skill, task, snapshot)
             val imageMatch = skill.exitVisualFrameHash != null && plan.visualFrameVerified &&
-                plan.visualFrameHash == skill.exitVisualFrameHash
+                plan.visualFrameHash == skill.exitVisualFrameHash &&
+                (skill.goalParameterKey == null || skill.goalParameterKey == SkillRequestPattern.parameterKey(task.parameters))
             return replayComplete && (checksMatch || imageMatch)
         }
         val extracted = buildMap<String, StateValue> {
@@ -211,12 +315,26 @@ class SonjuAgentRuntime private constructor(
         val completion = session.latestPlan?.takeIf { it.goalCompleted } ?: return
         if (!goalSatisfied(command, completion, finalSnapshot, session)) return
         val initialScreen = AccessibilityScreenParser.parse(session.initialSnapshot)
-        val finalScreen = AccessibilityScreenParser.parse(finalSnapshot)
-        val task = canonicalTask(command, initialScreen)
-        val checks = completion.goalChecks.mapNotNull { StoredGoalCheck.capture(it, finalSnapshot) }
+        val task = SkillLearner.bindInputs(session.boundSkillTask ?: canonicalTask(command, initialScreen), session.history)
+        val finalFingerprint = finalSnapshot.skillFingerprint(task.parameters)
+        val initialFingerprint = session.initialSnapshot.skillFingerprint(task.parameters)
+        val checks = completion.goalChecks.mapNotNull { StoredGoalCheck.capture(it, finalSnapshot, task.parameters) }
         if (checks.size != completion.goalChecks.size) return
         if (completion.source == PlanSource.SKILL_FAST_PATH) {
-            completion.skillId?.let(skillRepository::markSuccess)
+            completion.skillId?.let { id ->
+                val existing = skillRepository.get(id) ?: return
+                val pattern = SkillRequestPattern.capture(command, task.parameters)
+                val parameters = if (existing.requestKey == canonicalTask(command, initialScreen).requestKey) {
+                    existing.parameters.map { parameter ->
+                        val value = task.parameters[parameter.name]?.value
+                        val start = value?.let { task.requestText?.indexOf(it) }?.takeIf { it >= 0 }
+                        parameter.copy(requestStart = start, requestEnd = start?.let { it + value!!.length })
+                    }
+                } else existing.parameters
+                skillRepository.save(existing.copy(requestPatterns =
+                    (existing.requestPatterns + listOfNotNull(pattern)).distinct().takeLast(8), parameters = parameters))
+                skillRepository.markSuccess(id)
+            }
             return
         }
         val repair = session.skillRepair
@@ -226,15 +344,41 @@ class SonjuAgentRuntime private constructor(
             if (repair.stepIndex == existing.steps.size && session.history.drop(repair.traceIndex).isEmpty()) {
                 // Old caches or changed readouts need fresh goal evidence, not a fabricated action.
                 skillRepository.save(existing.copy(goalChecks = checks,
-                    exitFingerprint = finalScreen.fingerprint, exitPackage = finalSnapshot.packageName,
+                    exitFingerprint = finalFingerprint, exitPackage = finalSnapshot.packageName,
                     exitVisualFrameHash = completion.visualFrameHash,
+                    goalParameterKey = SkillRequestPattern.parameterKey(task.parameters),
+                    requestPatterns = (existing.requestPatterns + listOfNotNull(
+                        SkillRequestPattern.capture(command, task.parameters))).distinct().takeLast(8),
                     version = existing.version + 1, status = SkillStatus.ACTIVE,
                     confidence = maxOf(.6, existing.confidence), successCount = existing.successCount + 1,
                     lastValidatedAt = System.currentTimeMillis()))
                 return
             }
+            // Optimize the complete observed route whenever its start was replayed in this run.
+            // This also removes recovery detours which cross the old prefix/suffix boundary.
+            val full = SkillLearner.learn(task, session.history, initialFingerprint, finalFingerprint)
+            if (full != null) {
+                val observed = full.copy(goalChecks = checks, exitPackage = finalSnapshot.packageName,
+                    exitVisualFrameHash = completion.visualFrameHash)
+                // App entry may have been skipped because the user was already in the app.
+                // Replace the *observed* prefix as well, so a changed transition is not fabricated
+                // from an old fingerprint, nor discarded merely because the launch was skipped.
+                val startIndex = existing.steps.withIndex().filter { (index, step) ->
+                    index <= repair.stepIndex && step.entryFingerprint == observed.entryFingerprint &&
+                        existing.steps.take(index).all { it.action.type in APP_ENTRY_ACTIONS }
+                }.singleOrNull()?.index
+                val repaired = when {
+                    observed.entryFingerprint == existing.entryFingerprint -> SkillLearner.repair(existing, 0, observed)
+                    startIndex != null -> SkillLearner.repair(existing, startIndex, observed)
+                    else -> null
+                }
+                if (repaired != null) {
+                    skillRepository.save(repaired)
+                    return
+                }
+            }
             val suffix = SkillLearner.learn(task, session.history.drop(repair.traceIndex),
-                initialScreen.fingerprint, finalScreen.fingerprint)?.copy(
+                initialFingerprint, finalFingerprint)?.copy(
                     exitVisualFrameHash = completion.visualFrameHash, goalChecks = checks,
                     exitPackage = finalSnapshot.packageName) ?: return
             SkillLearner.repair(existing, repair.stepIndex, suffix)?.let(skillRepository::save)
@@ -243,9 +387,21 @@ class SonjuAgentRuntime private constructor(
         val skill = SkillLearner.learn(
             task = task,
             history = session.history,
-            fallbackEntryFingerprint = initialScreen.fingerprint,
-            fallbackExitFingerprint = finalScreen.fingerprint,
-        ) ?: return
+            fallbackEntryFingerprint = initialFingerprint,
+            fallbackExitFingerprint = finalFingerprint,
+        ) ?: if (session.history.isEmpty() && checks.isNotEmpty() &&
+            (task.taskType in OBSERVATIONAL_TASKS || com.hwanghj09.sonju.task.RequestInterpreter.isReadOnlyLookup(command))) {
+            AppSkill(skillId = "observed." + SkillRequestPattern.digest("${task.key}:${task.requestKey}:$initialFingerprint").take(20),
+                appId = task.appId ?: "any", taskType = task.taskType, name = task.taskType,
+                description = "현재 화면에서 검증된 조회 결과", parameters = task.parameters.keys.map { com.hwanghj09.sonju.skill.SkillParameter(it) },
+                entryFingerprint = initialFingerprint, exitFingerprint = finalFingerprint,
+                steps = emptyList(), risk = task.risk, requestKey = task.requestKey,
+                requestPatterns = listOfNotNull(SkillRequestPattern.capture(command, task.parameters)),
+                goalParameterKey = SkillRequestPattern.parameterKey(task.parameters), parameterizedScreens = true,
+                completionLevel = SkillRequestPattern.intent(command, task.parameters).requestedCompletionLevel,
+                constraintKey = SkillRequestPattern.digest(SkillRequestPattern.intent(command, task.parameters).constraints.toString()),
+                successCount = 1, lastValidatedAt = System.currentTimeMillis())
+        } else return
         val existing = skillRepository.get(skill.skillId)
         if (existing != null && existing.status == SkillStatus.ACTIVE &&
             existing.steps.size <= skill.steps.size) return
@@ -257,8 +413,9 @@ class SonjuAgentRuntime private constructor(
     fun recordPlanningFailure(plan: AgentPlan, session: AutonomySession, reason: String,
                               snapshot: UiSnapshot? = null, accessibilityFailure: Boolean = false) {
         plan.skillId?.let {
-            session.beginSkillRepair(it, plan.skillVersion ?: 1, session.nextSkillStep)
-            skillRepository.markFailure(it)
+            val retryable = snapshot != null && !plan.goalCompleted && plan.visualFrameHash == null
+            if (!session.failSkill(it, plan.skillVersion ?: 1, reason, retryable)) return
+            session.consumeSkillFailure()?.let(skillRepository::markFailure)
         }
         if (snapshot != null) session.recordPlanningRejection(plan, snapshot, reason, accessibilityFailure)
         else session.requestAiRecovery(reason, accessibilityFailure)
@@ -268,6 +425,7 @@ class SonjuAgentRuntime private constructor(
         command: String,
         verifiedPlan: VerifiedPlan,
         result: ExecutionResult,
+        session: AutonomySession? = null,
     ) {
         val action = verifiedPlan.actions.values.singleOrNull() ?: return
         val plan = verifiedPlan.plan
@@ -276,7 +434,7 @@ class SonjuAgentRuntime private constructor(
             result.failureReason == ExecutionFailureReason.USER_CANCELLED -> ExecutionStatus.CANCELLED
             else -> ExecutionStatus.FAILED
         }
-        if (!result.success || result.postconditionSatisfied == false) plan.skillId?.let(skillRepository::markFailure)
+        session?.consumeSkillFailure()?.let(skillRepository::markFailure)
         processLog.append(
             TraceStep(
                 sessionId = sessionId(command),
@@ -320,9 +478,7 @@ class SonjuAgentRuntime private constructor(
     }
 
     private fun canonicalTask(command: String, screen: ScreenState): CanonicalTask {
-        val request = java.text.Normalizer.normalize(command, java.text.Normalizer.Form.NFKC)
-            .replace(REQUEST_WHITESPACE, " ").trim()
-            .replace(POLITE_REQUEST_ENDING, "줘").replace(SPACED_REQUEST_ENDING, "줘")
+        val request = SkillRequestPattern.normalizeRequest(command)
         return taskCache.getOrPut(request) {
             DeterministicTaskCanonicalizer.canonicalize(
                 DeterministicTaskParser.parse(request, installedAppLabels()),
@@ -363,8 +519,8 @@ class SonjuAgentRuntime private constructor(
             },
             description = "저장된 방향으로 화면을 이동합니다.",
         )
-        is PlannedAction.OpenApp -> AgentAction(ActionType.OPEN_APP, "앱을 엽니다.", packageOrLabel)
-        is PlannedAction.OpenUrl -> AgentAction(ActionType.OPEN_URL, "저장된 공식 웹페이지를 엽니다.", url)
+        is PlannedAction.OpenApp -> AgentAction(ActionType.OPEN_APP, "앱을 엽니다.", packageOrLabel, initialQuery)
+        is PlannedAction.OpenUrl -> AgentAction(ActionType.OPEN_URL, "저장된 웹페이지를 엽니다.", url, browserPackage)
         is PlannedAction.UserCheckpoint -> AgentAction(ActionType.WAIT_FOR_USER, "사용자의 직접 확인을 기다립니다.", origin)
         PlannedAction.Back -> AgentAction(ActionType.BACK, "이전 화면으로 이동합니다.")
         PlannedAction.Home -> AgentAction(ActionType.HOME, "홈 화면으로 이동합니다.")
@@ -410,11 +566,8 @@ class SonjuAgentRuntime private constructor(
     }
 
     companion object {
-        private val REQUEST_WHITESPACE = Regex("\\s+")
-        private val POLITE_REQUEST_ENDING = Regex("\\s*주(?:세요|실래요|시겠어요)[.!?]*$")
-        private val SPACED_REQUEST_ENDING = Regex("\\s+줘[.!?]*$")
         private val OBSERVATIONAL_TASKS = setOf("open_app", "search", "calculate", "directions")
-        private val APP_ENTRY_ACTIONS = setOf(ActionType.OPEN_APP, ActionType.OPEN_WIFI_SETTINGS,
+        private val APP_ENTRY_ACTIONS = setOf(ActionType.OPEN_APP, ActionType.OPEN_URL, ActionType.OPEN_WIFI_SETTINGS,
             ActionType.OPEN_SOUND_SETTINGS, ActionType.OPEN_ACCESSIBILITY_SETTINGS,
             ActionType.OPEN_DISPLAY_SETTINGS, ActionType.OPEN_DATE_SETTINGS,
             ActionType.OPEN_CAMERA, ActionType.OPEN_DIALER, ActionType.OPEN_MESSAGES)

@@ -33,6 +33,7 @@ object HospitalReservationWorkflow {
 
     fun request(command: String) = com.hwanghj09.sonju.task.HospitalAppointmentRequest.parse(command)
     fun matches(command: String): Boolean = request(command) != null
+    fun supports(command: String): Boolean = matches(command) && unsupportedReason(command) == null
     fun siteFor(command: String): HospitalSite? = request(command)?.let {
         sites.filter { site -> site.namedIn(command) }.singleOrNull()
     }

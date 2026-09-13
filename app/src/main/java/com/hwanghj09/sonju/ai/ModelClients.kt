@@ -11,6 +11,7 @@ interface ExploratoryPlanClient {
         semanticMapJpegBase64: String?,
         userFeedbackGuidance: String? = null,
         autonomyContext: String? = null,
+        excludedClickPaths: Set<String> = emptySet(),
         callback: (Result<AgentPlan>) -> Unit,
     )
     fun cancelPending()
@@ -34,4 +35,3 @@ interface ScreenExplanationClient {
         callback: (Result<String>) -> Unit,
     )
 }
-

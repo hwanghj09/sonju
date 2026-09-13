@@ -63,7 +63,8 @@ object EssentialSafetyPolicy {
 
     /** Raw screenshots must not leave the device when accessibility has marked the screen private. */
     fun allowsRemoteScreenshot(snapshot: UiSnapshot): Boolean =
-        snapshot.packageName != "unknown" && snapshot.elements.none { it.visible && it.sensitive }
+        snapshot.packageName != "unknown" && snapshot.userIntervention != UserIntervention.Kind.DEVICE_UNLOCK &&
+            snapshot.elements.none { it.visible && it.sensitive }
 
     /**
      * Screenshot approval is bound to the same accessibility epoch and security-relevant content.

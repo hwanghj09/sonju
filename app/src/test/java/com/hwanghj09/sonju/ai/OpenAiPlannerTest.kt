@@ -92,7 +92,7 @@ class OpenAiPlannerTest {
                     .contains(ActionType.CLICK_COORDINATE.name),
             )
             assertTrue(actionTypeNames(format.getJSONObject("schema")).contains(ActionType.SUBMIT_TEXT.name))
-            assertFalse(actionTypeNames(format.getJSONObject("schema")).contains(ActionType.OPEN_URL.name))
+            assertTrue(actionTypeNames(format.getJSONObject("schema")).contains(ActionType.OPEN_URL.name))
 
             val input = request.getJSONArray("input").getJSONObject(0)
             assertEquals("user", input.getString("role"))

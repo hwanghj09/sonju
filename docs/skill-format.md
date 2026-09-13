@@ -1,29 +1,38 @@
-# AppSkill 저장 형식
+# AppSkill 저장·실행 계약
 
-`AppSkill`은 화면 좌표를 재생하는 macro가 아니라 canonical task와 semantic screen 전이에 묶인 parameterized workflow다.
+AppSkill은 요청의 입력값과 검증된 화면 전이를 연결하는 로컬 경로다. 기존 저장 형식은 읽을 수 있으며 새 필드는 선택적으로 복원한다.
 
-```text
-AppSkill
-  skillId, appId, taskType, name, description
-  parameters[]: name, type, required, description
-  entryFingerprint, exitFingerprint
-  steps[]
-  risk, version, confidence
-  successCount, failureCount, lastValidatedAt, status
+## 요청 처리
 
-SkillStep
-  stepId, entryFingerprint
-  action: type, targetTemplate, valueTemplate
-  expectedAfterFingerprint, retryPolicy, fallbackPolicy
-```
+1. 알려진 요청 표현과 현재 진입 화면이 맞으면 AppSkill을 사용한다. 앱 열기 등의 진입 동작은 다른 앱에서 시작해도 실행할 수 있다.
+2. 미등록 표현은 AI에 현재 관찰과 최대 8개의 값 없는 경로 후보를 전달한다. 모델은 일반 계획과 함께 `skill_reuse`를 제안할 수 있다. 런타임은 실제 제공한 ID, 현재 요청에 포함된 입력값, 인자 집합, 완료 범위와 제약을 검증한다.
+3. 각 동작은 grounding → verifier의 `VerifiedPlan` → live 재검증 → 실행 → 결과 관찰을 거친다.
+4. 목표가 실제 화면에서 검증된 뒤에만 경로와 표현을 저장한다. 해석이 모호하거나 후보가 충돌하면 AI가 처리한다.
 
-## 저장 규칙
+`requestPatterns`는 고정 문자열의 해시·길이와 parameter 위치만 보관한다. 원문 요청과 실제 입력값은 저장하지 않는다. 새 요청에서 경계가 하나로 결정될 때만 입력값을 추출하며 검색량을 제한한다. 자유로운 의역은 첫 AI 선택이 필요할 수 있고, 검증된 의역은 최대 8개까지 다음 실행에서 바로 사용할 수 있다.
 
-- 저장 가능한 행동은 click, set-text, scroll, open-app, back, home뿐이다.
-- `CLICK_COORDINATE`, screenshot, 원문 요청, 화면 본문, 비밀번호·OTP·결제정보는 저장하지 않는다.
-- 입력값은 반드시 `${parameter}` placeholder로 일반화한다. 일반화할 수 없는 `SET_TEXT` trace는 skill 후보에서 제외한다.
-- fast path는 task type, app id, 현재 fingerprint가 맞고 상태가 `ACTIVE`인 skill만 사용한다.
-- 성공 시 confidence를 최대 1.0까지 `+0.05`, 실패 시 최소 0까지 `-0.15` 갱신한다. 첫 실패는 `SUSPECT`, 누적 3회 실패는 `NEEDS_REPAIR`다.
-- 로컬 저장은 최대 100개 skill로 제한하고 `SkillRepository` 인터페이스 뒤에 둔다.
+복구 중 겹치는 입력값이 추가되면 원문 해시가 완전히 같은 요청에 한해서 저장된 입력 구간으로 모두 복원한다. 이 구간을 다른 요청에 적용하지 않는다. 겹치는 값의 새 표현처럼 경계를 자동 확정할 수 없는 경우에는 AI가 인자를 연결하고 경로를 이어간다.
 
-현재 on-device 형식은 `LocalSkillRepository`가 관리하는 versioned JSON이다. 클래스 필드가 canonical schema이며 외부에서 JSON blob을 직접 수정하지 않는다.
+입력값은 이번 요청의 `${parameter}`로 저장한다. 모델이 만들어 낸 문장이나 날짜처럼 요청에서 직접 추출할 수 없는 값은 로컬의 임의 변환으로 재사용하지 않는다. 기존에 검증된 deterministic parameter는 정확한 요청에 계속 사용할 수 있다.
+
+## 화면·완료 검증
+
+- 화면 지문에서는 현재 parameter와 편집 필드의 변하는 값을 분리한다. 현재 대상의 유일성·앱·실행 상태는 verifier가 별도로 검사한다.
+- 같은 스킬의 직전 단계가 성공했고 앱·대상의 ID/라벨·역할·상태 해시가 일치하면 검색 이력 등 부수 내용이 변해도 다음 단계를 재검증해 이어간다. 새로운 요청의 첫 화면에는 이 완화를 적용하지 않는다.
+- `goalChecks`에는 안정적인 selector, 텍스트 해시 또는 parameter 템플릿, checked 상태를 저장한다. 결과 본문은 저장하지 않는다.
+- `goalParameterKey`는 정적 결과가 어떤 입력값에서 검증됐는지 나타낸다. 다른 입력값에 과거 결과 해시를 적용해 완료로 판단하지 않는다. 입력값으로 검증할 수 없는 새 결과는 AI가 다시 확인한다.
+- 시각 경로는 실제 이미지 해시를 재검증한다. 이전 이미지와 다른 화면의 좌표를 재생하지 않는다.
+- 로그인·생체인식·캡챠는 사용자 대기를 유지하고 이 시간을 실행 시간 한도에서 제외한다.
+- Android 기기 잠금도 OS 상태로 확인한다. 잠금 중에는 모델 호출·스크린샷 전송·앱 조작 없이 기다리고, 사용자가 해제하면 원래 목표로 다시 관찰한다.
+
+## 실패·경로 개선
+
+- 실행 전 실패는 새 관찰에서 한 번만 재시도한다. 반복 실패 시 최초 실패 step/trace 위치를 보존하고 같은 세션의 현재 화면부터 AI로 넘긴다.
+- 반복 실패한 클릭과 그 자식 selector는 현재 응답의 허용 목록에서 제외한다. 모델이 같은 클릭을 다시 제안하느라 호출 한도를 소모하지 않도록 구조화 출력 스키마에도 반영한다.
+- 실제 실행 효과가 불확실한 timeout이나 화면 구조 변경은 곧바로 AI가 현재 결과를 확인한다. 입력·확정을 무조건 재시도하지 않는다.
+- 실패는 한 세션에서 한 번 기록하고 경로를 `SUSPECT`, 누적 3회면 `NEEDS_REPAIR`로 표시한다. 실패 경로는 다음 요청에서도 AI 복구 대상으로 남는다.
+- 완료 후 실제 관찰한 전체 경로를 먼저 최적화한다. 전체 경로를 재구성할 수 없으면 검증된 연결점의 suffix만 교체한다. 관찰하지 않은 연결은 만들지 않는다.
+- 최단화는 관찰된 전이 안에서만 수행한다. 입력·제출·상태 변경·확정·인증 단계를 보존하며, 아직 방문하지 않은 경로의 전역 최단성을 주장하지 않는다.
+- 정상 경로는 더 짧을 때만 교체한다. 실패 경로는 더 길어도 실제로 완료된 경로로 버전을 올린다. 실패·취소·미완료 trace는 정상 경로를 덮어쓰지 않는다.
+
+저장소는 최대 100개 AppSkill, 각 경로의 요청 표현은 최대 8개로 제한한다. 세션은 최대 60개 도구, 40개 모델 호출, 10분이며 사용자 중단과 반복 실패 차단이 우선한다. 구현에는 새 라이브러리를 추가하지 않았다.

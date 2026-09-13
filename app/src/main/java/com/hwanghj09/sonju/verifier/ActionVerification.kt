@@ -166,15 +166,24 @@ class DeterministicActionVerifier(
             return VerificationResult.Blocked("직접 확인은 사용자 대기 단계이며 접근성 실행 권한을 발급하지 않습니다.")
         }
         val intervention = com.hwanghj09.sonju.agent.UserIntervention.required(snapshot, intent.rawText)
+        if (intervention == com.hwanghj09.sonju.agent.UserIntervention.Kind.DEVICE_UNLOCK) {
+            return VerificationResult.Blocked("휴대폰 잠금은 사용자가 직접 해제해야 합니다.")
+        }
         if (intervention != null && intervention != com.hwanghj09.sonju.agent.UserIntervention.Kind.OTHER &&
             action.type != ActionType.OPEN_APP) {
             return VerificationResult.Blocked("인증 화면은 사용자가 직접 완료해야 합니다.")
         }
         if (action.type == ActionType.OPEN_URL &&
-            !com.hwanghj09.sonju.agent.HospitalReservationWorkflow.isAllowedUrl(intent.rawText, action.target)) {
-            return VerificationResult.Blocked("요청에 연결된 검토된 공식 조회 주소만 열 수 있습니다.")
+            !WebNavigationPolicy.allows(action.target)) {
+            return VerificationResult.NeedsReplan("웹 탐색에는 인증정보가 없는 유효한 http/https 주소가 필요합니다.")
         }
-        if (com.hwanghj09.sonju.agent.HospitalReservationWorkflow.matches(intent.rawText) &&
+        val hospital = com.hwanghj09.sonju.agent.HospitalReservationWorkflow
+        if (action.type == ActionType.OPEN_URL &&
+            (hospital.supports(intent.rawText) || plan.source == PlanSource.LOCAL_RULE && hospital.isReviewedUrl(action.target)) &&
+            !hospital.isAllowedUrl(intent.rawText, action.target)) {
+            return VerificationResult.Blocked("검증된 병원 조회 경로는 요청한 병원의 공식 조회 주소에만 연결됩니다.")
+        }
+        if (hospital.supports(intent.rawText) &&
             action.type !in setOf(ActionType.OPEN_URL, ActionType.SCROLL_DOWN, ActionType.SCROLL_UP, ActionType.WAIT)) {
             return VerificationResult.Blocked("예약 기록 조회에서는 로그인 입력이나 예약 변경·취소 버튼을 자동 조작하지 않습니다.")
         }

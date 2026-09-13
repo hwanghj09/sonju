@@ -13,6 +13,7 @@ import org.json.JSONObject
 class LocalSkillRepository(context: Context) : SkillRepository {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
+    @Synchronized
     override fun find(query: SkillQuery): List<AppSkill> = all().filter { skill ->
         skill.status != SkillStatus.DISABLED && skill.requestKey == query.requestKey &&
             skill.canonicalTaskKey == query.canonicalTaskKey &&
@@ -20,13 +21,16 @@ class LocalSkillRepository(context: Context) : SkillRepository {
             (query.appId == null || skill.appId == query.appId)
     }.sortedWith(compareByDescending<AppSkill> { it.confidence }.thenByDescending { it.version })
 
+    @Synchronized
     override fun get(skillId: String): AppSkill? = preferences.getString(key(skillId), null)?.let(SkillCodec::decode)
 
+    @Synchronized
     override fun save(skill: AppSkill) {
         preferences.edit { putString(key(skill.skillId), SkillCodec.encode(skill)) }
         trim()
     }
 
+    @Synchronized
     override fun markSuccess(skillId: String) {
         val skill = get(skillId) ?: return
         save(
@@ -39,6 +43,7 @@ class LocalSkillRepository(context: Context) : SkillRepository {
         )
     }
 
+    @Synchronized
     override fun markFailure(skillId: String) {
         val skill = get(skillId) ?: return
         val failures = skill.failureCount + 1
@@ -51,7 +56,8 @@ class LocalSkillRepository(context: Context) : SkillRepository {
         )
     }
 
-    private fun all(): List<AppSkill> = preferences.all.asSequence()
+    @Synchronized
+    override fun all(): List<AppSkill> = preferences.all.asSequence()
         .filter { (name, _) -> name.startsWith(KEY_PREFIX) }
         .mapNotNull { (_, raw) -> (raw as? String)?.let(SkillCodec::decode) }
         .toList()
@@ -81,12 +87,23 @@ internal object SkillCodec {
         .put("app_id", skill.appId)
         .put("task_type", skill.taskType)
         .put("request_key", skill.requestKey)
+        .put("request_patterns", JSONArray().apply {
+            skill.requestPatterns.forEach { pattern -> put(JSONArray().apply {
+                pattern.parts.forEach { part -> put(JSONObject().put("hash", part.hash ?: JSONObject.NULL)
+                    .put("length", part.length).put("parameter", part.parameter ?: JSONObject.NULL)) }
+            }) }
+        })
+        .put("goal_parameter_key", skill.goalParameterKey ?: JSONObject.NULL)
+        .put("parameterized_screens", skill.parameterizedScreens)
+        .put("completion_level", skill.completionLevel.name)
+        .put("constraint_key", skill.constraintKey)
         .put("exit_visual", skill.exitVisualFrameHash ?: JSONObject.NULL)
         .put("exit_package", skill.exitPackage ?: JSONObject.NULL)
         .put("goal_checks", JSONArray().apply {
             skill.goalChecks.forEach { check ->
                 put(JSONObject().put("selector", check.selector)
                     .put("text_hash", check.textHash ?: JSONObject.NULL)
+                    .put("text_template", check.textTemplate ?: JSONObject.NULL)
                     .put("checked", check.checked ?: JSONObject.NULL))
             }
         })
@@ -110,7 +127,9 @@ internal object SkillCodec {
                             .put("name", parameter.name)
                             .put("type", parameter.type.name)
                             .put("required", parameter.required)
-                            .put("description", parameter.description),
+                            .put("description", parameter.description)
+                            .put("request_start", parameter.requestStart ?: JSONObject.NULL)
+                            .put("request_end", parameter.requestEnd ?: JSONObject.NULL),
                     )
                 }
             },
@@ -132,7 +151,9 @@ internal object SkillCodec {
                             .put("visual", step.action.visualFrameHash ?: JSONObject.NULL)
                             .put("description", step.action.descriptionTemplate)
                             .put("retry", step.retryPolicy.maxAttempts)
-                            .put("fallback", step.fallbackPolicy.name),
+                            .put("fallback", step.fallbackPolicy.name)
+                            .put("entry_package", step.entryPackage ?: JSONObject.NULL)
+                            .put("target_identity", step.targetIdentityHash ?: JSONObject.NULL),
                     )
                 }
             },
@@ -152,6 +173,8 @@ internal object SkillCodec {
                         type = ParameterType.valueOf(item.getString("type")),
                         required = item.getBoolean("required"),
                         description = item.getString("description"),
+                        requestStart = if (item.isNull("request_start")) null else item.getInt("request_start"),
+                        requestEnd = if (item.isNull("request_end")) null else item.getInt("request_end"),
                     ),
                 )
             }
@@ -176,6 +199,8 @@ internal object SkillCodec {
                         expectedAfterFingerprint = item.nullableString("after"),
                         retryPolicy = RetryPolicy(item.getInt("retry")),
                         fallbackPolicy = StepFallbackPolicy.valueOf(item.getString("fallback")),
+                        entryPackage = item.nullableString("entry_package"),
+                        targetIdentityHash = item.nullableString("target_identity"),
                     ),
                 )
             }
@@ -185,13 +210,29 @@ internal object SkillCodec {
             appId = json.getString("app_id"),
             taskType = json.getString("task_type"),
             requestKey = json.optString("request_key"),
+            requestPatterns = json.optJSONArray("request_patterns")?.let { patterns ->
+                (0 until minOf(patterns.length(), 8)).map { index ->
+                    val parts = patterns.getJSONArray(index)
+                    require(parts.length() in 1..33)
+                    SkillRequestPattern((0 until parts.length()).map { partIndex ->
+                        val part = parts.getJSONObject(partIndex)
+                        RequestPart(part.nullableString("hash"), part.getInt("length"), part.nullableString("parameter"))
+                    })
+                }
+            }.orEmpty(),
+            goalParameterKey = json.nullableString("goal_parameter_key"),
+            parameterizedScreens = json.optBoolean("parameterized_screens"),
+            completionLevel = com.hwanghj09.sonju.task.CompletionLevel.valueOf(
+                json.optString("completion_level", "NAVIGATE_TO_TARGET")),
+            constraintKey = json.optString("constraint_key"),
             exitVisualFrameHash = json.nullableString("exit_visual"),
             exitPackage = json.nullableString("exit_package"),
             goalChecks = json.optJSONArray("goal_checks")?.let { checks ->
                 (0 until checks.length()).map { index ->
                     val check = checks.getJSONObject(index)
                     StoredGoalCheck(check.getString("selector"), check.nullableString("text_hash"),
-                        if (check.isNull("checked")) null else check.getBoolean("checked"))
+                        if (check.isNull("checked")) null else check.getBoolean("checked"),
+                        check.nullableString("text_template"))
                 }
             }.orEmpty(),
             name = json.getString("name"),

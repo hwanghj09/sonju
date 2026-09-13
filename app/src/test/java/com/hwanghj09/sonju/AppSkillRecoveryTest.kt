@@ -156,7 +156,7 @@ class AppSkillRecoveryTest {
         assertFalse(session().aiRecoveryRequested)
         val budget = session()
         assertFalse(budget.needsFreshObservation)
-        repeat(24) { assertTrue(budget.reserveModelCall(1)) }
+        repeat(40) { assertTrue(budget.reserveModelCall(1)) }
         assertTrue(budget.aiRecoveryRequested)
         assertTrue(budget.needsFreshObservation)
         assertFalse(budget.reserveModelCall(1))
