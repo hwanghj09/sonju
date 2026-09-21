@@ -1441,7 +1441,7 @@ object AppWorkflowRouter {
                     reason = "현재 화면의 유일한 검색 입력란을 로컬 semantic 정보로 식별",
                 )
             }
-            if (com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(editable)) {
+            if (com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(editable, snapshot)) {
                 return WorkflowDecision(
                     action = AgentAction(
                         type = ActionType.SUBMIT_TEXT,

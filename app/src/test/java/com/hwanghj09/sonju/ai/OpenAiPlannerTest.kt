@@ -13,6 +13,23 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class OpenAiPlannerTest {
+    @Test fun invalidOptionalReuseMetadataKeepsTheConcretePlanAvailableForVerification() = withPlanner { planner ->
+        val entry = JSONObject().put("name", "input1").put("value", "회의 자료")
+        val malformed = listOf(
+            JSONObject().put("skill_id", "saved"),
+            JSONObject().put("skill_id", "saved").put("parameters", JSONArray().put(
+                JSONObject().put("name", "").put("value", ""))),
+            JSONObject().put("skill_id", "saved").put("parameters", JSONArray().put(entry).put(entry)),
+        )
+        for (reuse in malformed) {
+            val parsed = planner.parsePlanResponse(completedResponse(validPlanJson().put("skill_reuse", reuse)))
+            assertEquals(null, parsed.skillReuse)
+            assertEquals(ActionType.OPEN_APP, parsed.actions.first().type)
+            assertEquals("설정", parsed.actions.first().target)
+            assertFalse(parsed.goalCompleted)
+        }
+    }
+
     @Test fun compactReferencesBindActionsAndCompletionToTheOriginalDeepNode() = withPlanner { planner ->
         val deepPath = "0" + ".0".repeat(28) + ".2"
         val node = com.hwanghj09.sonju.agent.UiElement(deepPath, null, "android.widget.Button", "결과 보기", null,

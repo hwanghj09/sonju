@@ -3,6 +3,7 @@ package com.hwanghj09.sonju.grounding
 import com.hwanghj09.sonju.perception.ScreenState
 import com.hwanghj09.sonju.perception.SemanticNode
 import com.hwanghj09.sonju.perception.SemanticRole
+import com.hwanghj09.sonju.agent.UiNodeAction
 import java.text.Normalizer
 import kotlin.math.abs
 
@@ -24,6 +25,7 @@ data class GroundingQuery(
     val ancestorHint: String? = null,
     val descendantHint: String? = null,
     val interaction: InteractionRequirement = InteractionRequirement.ANY,
+    val scrollAction: UiNodeAction? = null,
 )
 
 data class GroundingCandidate(
@@ -56,6 +58,7 @@ class DeterministicSemanticGrounder(
         val byId = screen.nodes.associateBy(SemanticNode::nodeId)
         val scored = screen.nodes.asSequence()
             .filter { node -> node.visible && node.enabled && satisfiesInteraction(node, query.interaction) }
+            .filter { node -> supportsScrollAction(node, query.scrollAction) }
             .mapNotNull { node ->
                 val score = score(node, query, byId)
                 if (score <= 0) null else node to score
@@ -73,7 +76,9 @@ class DeterministicSemanticGrounder(
             .map { (_, values) -> values.maxBy { it.second } }
             .sortedWith(compareByDescending<Pair<SemanticNode, Int>> { it.second }.thenBy { it.first.nodeId })
 
-        if (scored.isEmpty()) return GroundingResult.NotFound("semantic target not found")
+        if (scored.isEmpty()) return GroundingResult.NotFound(if (query.scrollAction != null)
+            "요청한 대상과 스크롤 방향에 맞는 접근성 노드를 찾지 못했습니다. 실제 지원 방향과 target을 다시 확인하세요."
+            else "semantic target not found")
         val best = scored.first()
         val runnerUp = scored.getOrNull(1)
         if (runnerUp != null && best.second - runnerUp.second < ambiguityMargin) {
@@ -219,6 +224,17 @@ class DeterministicSemanticGrounder(
                 else -> false
             }
         }
+
+    private fun supportsScrollAction(node: SemanticNode, requested: UiNodeAction?): Boolean {
+        if (requested == null || requested in node.actions) return true
+        val directions = setOf(UiNodeAction.SCROLL_UP, UiNodeAction.SCROLL_DOWN,
+            UiNodeAction.SCROLL_LEFT, UiNodeAction.SCROLL_RIGHT)
+        if (node.actions.any { it in directions }) return false
+        val generic = if (requested in setOf(UiNodeAction.SCROLL_DOWN, UiNodeAction.SCROLL_RIGHT))
+            UiNodeAction.SCROLL_FORWARD else UiNodeAction.SCROLL_BACKWARD
+        return generic in node.actions || node.actions.none {
+            it == UiNodeAction.SCROLL_FORWARD || it == UiNodeAction.SCROLL_BACKWARD }
+    }
 
     private fun spatialScore(
         node: SemanticNode,

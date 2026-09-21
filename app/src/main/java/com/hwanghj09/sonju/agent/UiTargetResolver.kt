@@ -11,14 +11,19 @@ object UiTargetResolver {
             it.visible && it.enabled && it.editable && !it.sensitive
         }
         val previous = editors(before).singleOrNull { it.path == path } ?: return null
+        fun compatibleLabel(old: String?, current: String?) = old == current || old.isNullOrBlank() || current.isNullOrBlank()
+        fun sameSearchPurpose(current: UiElement) =
+            com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(previous, before) &&
+                com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(current, after)
         val candidates = editors(after).filter { it.className == previous.className &&
-            it.hintText == previous.hintText && it.contentDescription == previous.contentDescription }
+            (compatibleLabel(previous.hintText, it.hintText) &&
+                compatibleLabel(previous.contentDescription, it.contentDescription) || sameSearchPurpose(it)) }
         val id = previous.viewId?.takeIf(String::isNotBlank)
         if (id != null && editors(before).count { it.viewId == id } == 1) {
             return candidates.singleOrNull { it.viewId == id }
         }
-        return candidates.singleOrNull { it.path == path && it.viewId == previous.viewId &&
-            it.hintText == previous.hintText && it.contentDescription == previous.contentDescription }
+        return candidates.singleOrNull { it.path == path && it.viewId == previous.viewId }
+            ?: candidates.singleOrNull { it.viewId == previous.viewId && sameSearchPurpose(it) }
     }
 
     fun resolveClickable(action: AgentAction, snapshot: UiSnapshot): ResolvedClick? {

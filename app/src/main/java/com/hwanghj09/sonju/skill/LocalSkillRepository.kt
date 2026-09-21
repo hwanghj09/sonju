@@ -88,10 +88,7 @@ internal object SkillCodec {
         .put("task_type", skill.taskType)
         .put("request_key", skill.requestKey)
         .put("request_patterns", JSONArray().apply {
-            skill.requestPatterns.forEach { pattern -> put(JSONArray().apply {
-                pattern.parts.forEach { part -> put(JSONObject().put("hash", part.hash ?: JSONObject.NULL)
-                    .put("length", part.length).put("parameter", part.parameter ?: JSONObject.NULL)) }
-            }) }
+            skill.requestPatterns.forEach { put(encodePattern(it)) }
         })
         .put("goal_parameter_key", skill.goalParameterKey ?: JSONObject.NULL)
         .put("parameterized_screens", skill.parameterizedScreens)
@@ -104,6 +101,7 @@ internal object SkillCodec {
                 put(JSONObject().put("selector", check.selector)
                     .put("text_hash", check.textHash ?: JSONObject.NULL)
                     .put("text_template", check.textTemplate ?: JSONObject.NULL)
+                    .put("text_pattern", check.textPattern?.let(::encodePattern) ?: JSONObject.NULL)
                     .put("checked", check.checked ?: JSONObject.NULL))
             }
         })
@@ -212,12 +210,7 @@ internal object SkillCodec {
             requestKey = json.optString("request_key"),
             requestPatterns = json.optJSONArray("request_patterns")?.let { patterns ->
                 (0 until minOf(patterns.length(), 8)).map { index ->
-                    val parts = patterns.getJSONArray(index)
-                    require(parts.length() in 1..33)
-                    SkillRequestPattern((0 until parts.length()).map { partIndex ->
-                        val part = parts.getJSONObject(partIndex)
-                        RequestPart(part.nullableString("hash"), part.getInt("length"), part.nullableString("parameter"))
-                    })
+                    decodePattern(patterns.getJSONArray(index))
                 }
             }.orEmpty(),
             goalParameterKey = json.nullableString("goal_parameter_key"),
@@ -232,7 +225,7 @@ internal object SkillCodec {
                     val check = checks.getJSONObject(index)
                     StoredGoalCheck(check.getString("selector"), check.nullableString("text_hash"),
                         if (check.isNull("checked")) null else check.getBoolean("checked"),
-                        check.nullableString("text_template"))
+                        check.nullableString("text_template"), check.optJSONArray("text_pattern")?.let(::decodePattern))
                 }
             }.orEmpty(),
             name = json.getString("name"),
@@ -250,6 +243,19 @@ internal object SkillCodec {
             status = SkillStatus.valueOf(json.getString("status")),
         )
     }.getOrNull()
+
+    private fun encodePattern(pattern: SkillRequestPattern): JSONArray = JSONArray().apply {
+        pattern.parts.forEach { part -> put(JSONObject().put("hash", part.hash ?: JSONObject.NULL)
+            .put("length", part.length).put("parameter", part.parameter ?: JSONObject.NULL)) }
+    }
+
+    private fun decodePattern(parts: JSONArray): SkillRequestPattern {
+        require(parts.length() in 1..33)
+        return SkillRequestPattern((0 until parts.length()).map { index ->
+            val part = parts.getJSONObject(index)
+            RequestPart(part.nullableString("hash"), part.getInt("length"), part.nullableString("parameter"))
+        })
+    }
 
     private fun JSONObject.nullableString(name: String): String? =
         if (isNull(name)) null else getString(name).takeIf(String::isNotBlank)

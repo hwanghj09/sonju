@@ -1,6 +1,7 @@
 package com.hwanghj09.sonju.skill
 
 import com.hwanghj09.sonju.agent.UiSnapshot
+import com.hwanghj09.sonju.agent.normalizeGoalText
 import com.hwanghj09.sonju.task.TaskParameter
 import java.security.MessageDigest
 import java.text.Normalizer
@@ -9,6 +10,23 @@ import java.text.Normalizer
 data class RequestPart(val hash: String? = null, val length: Int = 0, val parameter: String? = null)
 
 data class SkillRequestPattern(val parts: List<RequestPart>) {
+    /** Result evidence has known values, so match every literal and slot without guessing. */
+    fun matchesText(text: String, parameters: Map<String, TaskParameter>): Boolean {
+        val normalized = normalizeGoalText(text)
+        var offset = 0
+        for (part in parts) {
+            val value = part.parameter?.let { name ->
+                parameters[name]?.value?.let(::normalizeGoalText) ?: return false
+            }
+            val end = offset + (value?.length ?: part.length)
+            if (end <= offset || end > normalized.length) return false
+            val actual = normalized.substring(offset, end)
+            if (value != null && actual != value || value == null && digest(actual) != part.hash) return false
+            offset = end
+        }
+        return parts.isNotEmpty() && offset == normalized.length
+    }
+
     // ponytail: bounded literal/slot matching; unseen or ambiguous wording uses the existing model.
     fun bind(request: String): Map<String, TaskParameter>? {
         val text = normalizeRequest(request)
@@ -26,6 +44,12 @@ data class SkillRequestPattern(val parts: List<RequestPart>) {
             if (name == null) {
                 val end = offset + part.length
                 if (part.length > 0 && end <= text.length && digest(text.substring(offset, end)) == part.hash) {
+                    val previousValue = parts.getOrNull(index - 1)?.parameter?.let { values[it]?.value }
+                    val literal = text.substring(offset, end)
+                    // "일정이라고" must not bind "일정이" to a learned "...라고" slot.
+                    // Unseen particle boundaries need model binding, then get their own pattern.
+                    if (previousValue?.endsWith("이") == true && literal.startsWith("라고") ||
+                        previousValue?.endsWith("으") == true && literal.startsWith("로")) return
                     visit(index + 1, end, values)
                 }
             } else {
@@ -49,8 +73,30 @@ data class SkillRequestPattern(val parts: List<RequestPart>) {
     }
 
     companion object {
-        fun capture(request: String, parameters: Map<String, TaskParameter>): SkillRequestPattern? {
-            val text = normalizeRequest(request)
+        fun capture(request: String, parameters: Map<String, TaskParameter>): SkillRequestPattern? =
+            captureNormalized(normalizeRequest(request), parameters)?.takeIf {
+                it.bind(request)?.mapValues { (_, value) -> value.value } == parameters.mapValues { (_, value) -> value.value }
+            }
+
+        fun captureText(text: String, parameters: Map<String, TaskParameter>): SkillRequestPattern? {
+            val normalized = normalizeGoalText(text)
+            val values = parameters.mapValues { (_, parameter) -> parameter.copy(
+                value = parameter.value?.let(::normalizeGoalText)) }
+                .filterValues { parameter ->
+                    val value = parameter.value?.takeIf(String::isNotBlank) ?: return@filterValues false
+                    val occurrences = Regex(Regex.escape(value)).findAll(normalized).toList()
+                    // A query "1" must not turn a price "1000" into reusable evidence.
+                    occurrences.isNotEmpty() && occurrences.all { match ->
+                        listOf(match.range.first - 1, match.range.last + 1).all { index ->
+                            normalized.getOrNull(index)?.let { it.isLetterOrDigit() || it == '_' } != true
+                        }
+                    }
+                }
+            if (values.isEmpty()) return null
+            return captureNormalized(normalized, values)?.takeIf { it.matchesText(normalized, values) }
+        }
+
+        private fun captureNormalized(text: String, parameters: Map<String, TaskParameter>): SkillRequestPattern? {
             if (text.length !in 1..MAX_REQUEST) return null
             val values = parameters.values.filter { !it.value.isNullOrBlank() }
                 .sortedByDescending { it.value!!.length }
@@ -70,9 +116,7 @@ data class SkillRequestPattern(val parts: List<RequestPart>) {
             }
             if (parts.none { it.hash != null } || parts.zipWithNext().any { (a, b) ->
                     a.parameter != null && b.parameter != null }) return null
-            return SkillRequestPattern(parts).takeIf {
-                it.bind(request)?.mapValues { (_, value) -> value.value } == parameters.mapValues { (_, value) -> value.value }
-            }
+            return SkillRequestPattern(parts).takeIf { parts.size <= 33 }
         }
 
         fun normalizeRequest(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)

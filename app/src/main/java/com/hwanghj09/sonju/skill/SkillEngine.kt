@@ -84,11 +84,16 @@ fun StoredSkillAction.targetIdentity(snapshot: UiSnapshot, parameters: Map<Strin
 
 /** Preserve completion evidence without persisting the observed result or personal text. */
 data class StoredGoalCheck(val selector: String, val textHash: String?, val checked: Boolean?,
-                           val textTemplate: String? = null) {
+                           val textTemplate: String? = null, val textPattern: SkillRequestPattern? = null) {
     fun resolve(snapshot: UiSnapshot, parameters: Map<String, TaskParameter> = emptyMap()): GoalCheck? {
         val check = GoalCheck(selector, checked = checked)
         val node = check.resolveNode(snapshot) ?: return null
         if (!check.matches(snapshot)) return null
+        if (textPattern != null) {
+            val text = listOfNotNull(node.text, node.contentDescription, node.stateDescription)
+                .firstOrNull { textPattern.matchesText(it, parameters) } ?: return null
+            return check.copy(text = text)
+        }
         if (textTemplate != null) {
             val text = ParameterFiller.fill(textTemplate, parameters) ?: return null
             return check.copy(text = text).takeIf { it.matches(snapshot) }
@@ -112,9 +117,10 @@ data class StoredGoalCheck(val selector: String, val textHash: String?, val chec
             if (text == null && check.checked == null) return null
             val parameter = parameters.values.singleOrNull { it.value != null &&
                 text?.let(::normalizeGoalText) == normalizeGoalText(it.value) }
+            val pattern = text?.takeIf { parameter == null }?.let { SkillRequestPattern.captureText(it, parameters) }
             return StoredGoalCheck(id?.let { "id=$it" } ?: "path=${node.path}",
-                text?.takeIf { parameter == null }?.let { digest(normalizeGoalText(it)) }, check.checked,
-                parameter?.let { "${'$'}{${it.name}}" })
+                text?.takeIf { parameter == null && pattern == null }?.let { digest(normalizeGoalText(it)) }, check.checked,
+                parameter?.let { "${'$'}{${it.name}}" }, pattern)
         }
 
         private fun digest(value: String) = MessageDigest.getInstance("SHA-256")
@@ -315,10 +321,10 @@ class FastPathPlanner : Planner {
                 value = value ?: return null,
             )
             ActionType.SUBMIT_TEXT -> PlannedAction.SubmitText(GroundingQuery(selector = target), value ?: return null)
-            ActionType.SCROLL_UP -> PlannedAction.Scroll(null, ScrollDirection.UP)
-            ActionType.SCROLL_DOWN -> PlannedAction.Scroll(null, ScrollDirection.DOWN)
-            ActionType.SCROLL_LEFT -> PlannedAction.Scroll(null, ScrollDirection.LEFT)
-            ActionType.SCROLL_RIGHT -> PlannedAction.Scroll(null, ScrollDirection.RIGHT)
+            ActionType.SCROLL_UP -> PlannedAction.Scroll(target?.let { GroundingQuery(selector = it) }, ScrollDirection.UP)
+            ActionType.SCROLL_DOWN -> PlannedAction.Scroll(target?.let { GroundingQuery(selector = it) }, ScrollDirection.DOWN)
+            ActionType.SCROLL_LEFT -> PlannedAction.Scroll(target?.let { GroundingQuery(selector = it) }, ScrollDirection.LEFT)
+            ActionType.SCROLL_RIGHT -> PlannedAction.Scroll(target?.let { GroundingQuery(selector = it) }, ScrollDirection.RIGHT)
             ActionType.OPEN_APP -> PlannedAction.OpenApp(target ?: return null, value)
             ActionType.OPEN_URL -> PlannedAction.OpenUrl(target ?: return null, value)
             ActionType.WAIT_FOR_USER -> PlannedAction.UserCheckpoint(target ?: return null)
@@ -351,7 +357,17 @@ object SkillLearner {
                 parameters["input$index"] = TaskParameter("input$index", value)
             }
         }
-        return task.copy(parameters = parameters)
+        val usedText = history.filter { it.succeeded || it.postconditionMismatch }
+            .flatMap { listOfNotNull(it.action.target, it.action.value) }
+        // A coarse parser may include an app/page prefix in "query". Keep that prefix as a
+        // fixed request fragment when the verified route used only the narrower user input.
+        return task.copy(parameters = parameters.filterValues { parameter ->
+            val value = parameter.value ?: return@filterValues true
+            usedText.any { it.contains(value) } || parameters.values.none { other ->
+                val input = other.value
+                input != null && input != value && value.contains(input) && usedText.any { it.contains(input) }
+            }
+        })
     }
 
     fun learn(
@@ -394,7 +410,8 @@ object SkillLearner {
             name = task.taskType,
             description = "검증된 성공 경로",
             parameters = task.parameters.values.map { parameter ->
-                val start = parameter.value?.let { task.requestText?.indexOf(it) }?.takeIf { it >= 0 }
+                val start = parameter.value?.let { task.requestText?.indexOf(it) }?.takeIf { it >= 0 &&
+                    task.requestText?.let(SkillRequestPattern::digest) == task.requestKey }
                 SkillParameter(name = parameter.name, required = parameter.required,
                     requestStart = start, requestEnd = start?.let { it + parameter.value!!.length })
             },
@@ -475,7 +492,11 @@ object SkillLearner {
             step.copy(stepId = "step-${stepIndex + index + 1}")
         }
         return existing.copy(steps = steps, entryFingerprint = steps.first().entryFingerprint,
-            parameters = suffix.parameters,
+            parameters = suffix.parameters.map { parameter ->
+                existing.parameters.singleOrNull { it.name == parameter.name }?.let { original ->
+                    parameter.copy(requestStart = original.requestStart, requestEnd = original.requestEnd)
+                } ?: parameter
+            },
             exitFingerprint = suffix.exitFingerprint,
             exitVisualFrameHash = suffix.exitVisualFrameHash,
             goalChecks = suffix.goalChecks,

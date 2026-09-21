@@ -35,7 +35,9 @@ object UserIntervention {
                         parent.clickable && node.path.startsWith("${parent.path}.")
                     } || node.heading || it == Kind.CAPTCHA
                 } }.firstOrNull()
-            ?: if (snapshot.elements.any { it.visible && it.editable && it.sensitive }) Kind.OTHER else null
+            // Tracking tokens in a browser-owned URL stay redacted, but are not a login challenge.
+            ?: if (snapshot.elements.any { it.visible && it.editable && it.sensitive &&
+                    !isBrowserAddressField(snapshot, it) }) Kind.OTHER else null
     }
 
     fun guide(kind: Kind): String = "${kind.label}이 필요해요. 현재 앱에서 직접 완료해 주세요. " +
@@ -75,8 +77,7 @@ object UserIntervention {
     fun browserLocation(snapshot: UiSnapshot, httpsOnly: Boolean = true): URI? {
         if (snapshot.packageName !in BROWSERS) return null
         return snapshot.elements.asSequence().filter { node -> node.visible && !node.sensitive &&
-            node.viewId?.let { id -> id.startsWith("${snapshot.packageName}:id/") &&
-                ADDRESS_IDS.any { id.substringAfter(":id/").contains(it) } } == true
+            isBrowserAddressField(snapshot, node)
         }.mapNotNull { node ->
             val raw = node.text?.trim { it.isWhitespace() || it in ADDRESS_EDGE_MARKS }
                 ?.takeIf { it.length in 1..1_000 && ' ' !in it } ?: return@mapNotNull null
@@ -88,6 +89,10 @@ object UserIntervention {
     }
 
     fun browserOrigin(snapshot: UiSnapshot): String? = browserLocation(snapshot)?.let { "https://${it.host.lowercase()}" }
+    private fun isBrowserAddressField(snapshot: UiSnapshot, node: UiElement): Boolean =
+        snapshot.packageName in BROWSERS && node.viewId?.let { id ->
+            id.startsWith("${snapshot.packageName}:id/") && ADDRESS_IDS.any { id.substringAfter(":id/").contains(it) }
+        } == true
     private fun compact(value: String) = Normalizer.normalize(value, Normalizer.Form.NFKC).lowercase().replace(WHITESPACE, "")
     private val WHITESPACE = Regex("\\s+")
     private val NOT_READY = Regex("^(?:로딩중|불러오는중|잠시만기다려주세요|loading|pleasewait)|(?:인증|로그인).*(?:실패|취소)|authentication(?:failed|cancelled)")

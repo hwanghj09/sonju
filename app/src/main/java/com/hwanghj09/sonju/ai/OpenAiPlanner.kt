@@ -383,12 +383,20 @@ class OpenAiPlanner(
           target은 검색 또는 브라우저 주소 입력란으로 식별되는 편집 노드여야 한다.
           value는 현재 입력란의 실제 값 전체와 같아야 한다. 목표에 맞게 구성한 검색어와
           http/https 주소도 제출할 수 있다. IME_ENTER 노출 여부만으로 제출 불가라고 판단하지 않는다.
+          입력 후 힌트가 사라지는 검색창은 연결된 imeAction=3(SEARCH) 또는 입력창 자식의 검색 라벨로 식별한다.
+          SET_TEXT, 입력값 표시, 자동완성 후보, 키보드 닫힘만으로 검색 완료라고 판단하지 않는다.
+          검색을 실제 제출한 뒤 결과 목록·검색 결과 없음·이동한 페이지 본문을 goal_checks로 확인한다.
+          SUBMIT_TEXT가 성공한 뒤 같은 검색창을 다시 CLICK하지 않는다. 로딩 중이면 WAIT 후 결과를 관찰한다.
+          SET_TEXT 직후에는 입력한 검색어를 먼저 제출한다. 사용자가 지정하지 않은 다른 자동완성·브랜드를 눌러
+          검색 범위를 바꾸지 않는다. 주문 준비의 가게 선택도 원문 검색으로 실제 가게 결과를 얻은 뒤 진행한다.
           메시지·댓글·인증·결제 입력란에는 SUBMIT_TEXT를 쓰지 않는다.
         - SET_TEXT가 성공하지 않거나 입력한 값이 관찰되지 않으면 같은 입력란 클릭/입력을 반복하지 않는다.
           현재 보이는 키패드나 대체 입력 컨트롤을 사용하고 매 단계 실제 입력값을 확인한다.
         - 최근 실행 결과의 '실패'와 '변화없음'은 성공이 아니다. 다른 경로/컨트롤을 선택한다.
           화면이 로딩 중이라는 근거 없이 WAIT를 반복하지 않는다.
         - SCROLL_UP/DOWN/LEFT/RIGHT는 목표가 화면 밖에 있거나 페이지 전환 제스처가 필요할 때 쓴다.
+          노드가 실제로 지원하는 방향을 따른다. SCROLL_LEFT/RIGHT만 있는 가로 목록을 아래 스크롤 대상으로 삼지 않는다.
+          같은 방향의 영역이 여럿이면 본문을 담은 관찰 노드의 정확한 target을 지정한다.
         - OPEN_APP target과 target_app은 아래 설치 앱 목록의 정확한 package를 사용한다.
           요청에 앱 이름이 없어도 label과 package의 의미를 요청 목적과 비교해 관련 앱을 찾는다.
           현재 화면에 앱 아이콘이 없거나 요청 문구와 앱 이름이 다르다는 이유로 미설치라고 하지 않는다.
@@ -405,9 +413,19 @@ class OpenAiPlanner(
         - 같은 화면에서 두 번 실패한 동작은 그대로 반복하지 말고 selector, 도구 또는 경로를 바꾼다.
         - 비용과 지연을 줄이기 위해 접근성 노드 도구를 좌표 도구보다 우선하고, 과거 성공 경로가
           현재 화면과 맞으면 더 짧은 경로를 응용한다.
-        - 음식 주문에서 음식 종류만 주어졌다면 검색까지 진행할 수 있지만, 여러 식당·메뉴·옵션 중
-          하나를 임의로 고르지 않는다. 화면에서 후보가 하나로 확정되지 않으면 행동을 꾸며내지 말고
-          사용자가 선택할 수 있는 상태에서 멈춘다.
+        - 검색·후보 목록은 전체 작업의 중간 단계일 수 있다. 주문·예약·설정 변경 등 원래 요청이 남아 있으면
+          검색 성공을 최종 완료로 바꾸거나 FINISH만 반환하지 않는다.
+        - 되돌릴 수 있는 후보 상세 열기와 준비는 계속 진행한다. 사용자가 지정한 조건을 우선하고,
+          조건이 없다면 현재 기본 정렬에서 요청에 맞는 첫 후보의 상세를 확인하며 선택 기준을 짧게 밝힌다.
+          여러 후보가 있다는 것과 클릭 대상 하나를 식별할 수 없다는 것은 다르다. click_target이 있으면
+          해당 관찰된 컨트롤을 사용한다. 확인하지 않은 가격·평점·선호·필수 정보를 만들어내지 않는다.
+        - 음식 종류만 주어져도 가게 상세와 메뉴·옵션을 확인하는 준비를 검색 다음 단계로 진행한다.
+          요청한 조건에서 주문·예약할 수 없다는 표시(영업 종료·오픈알림·품절 등)가 보이면 그 후보에 머물지 말고,
+          현재 이용 가능한 다른 관찰 후보를 확인한다. 없는 메뉴나 주문 버튼을 만들어내지 않는다.
+          모델이 추천검색어·브랜드·필터로 범위를 좁힌 뒤 이용 가능한 후보가 없으면, 사용자가 지정하지 않은
+          제한을 풀고 원래 요청 범위로 다시 탐색한다. 사용자가 명시한 조건은 바꾸지 않는다.
+          기존 장바구니나 다른 작업을 임의로 비우지 않는다. 최종 결제·전송·예약 확정 등의 제한은
+          실제 해당 동작 직전에 적용하며, 제한을 미리 예상해 가능한 탐색까지 중단하지 않는다.
         - 로그인, 생체인식, 캡챠, 본인인증, 2단계 인증은 사용자가 직접 수행한다.
           인증번호·보안문자를 풀거나 입력하거나 인증 버튼을 대신 조작하지 않는다.
           로컬 사용자 대기 흐름이 완료 화면을 확인한 뒤 원래 목표의 계획을 다시 요청한다.
@@ -712,7 +730,9 @@ class OpenAiPlanner(
             strategy = json.getJSONArray("strategy").toStrings(12, 300),
             successCriteria = json.getJSONArray("success_criteria").toStrings(8, 300),
             revisionReason = json.getString("revision_reason").take(300),
-            skillReuse = json.optJSONObject("skill_reuse")?.let { reuse ->
+            // Reuse is advisory. Invalid slot metadata must not discard a valid next action;
+            // that action still has to pass grounding and the deterministic verifier.
+            skillReuse = runCatching { json.optJSONObject("skill_reuse")?.let { reuse ->
                 val entries = reuse.getJSONArray("parameters")
                 require(entries.length() <= 16)
                 val parameters = (0 until entries.length()).map { index ->
@@ -724,7 +744,7 @@ class OpenAiPlanner(
                 }
                 require(parameters.map { it.first }.distinct().size == parameters.size)
                 com.hwanghj09.sonju.skill.SkillReuseSuggestion(reuse.getString("skill_id"), parameters.toMap())
-            },
+            } }.getOrNull(),
             visualFallback = usedSemanticMap,
             goalChecks = json.optJSONArray("goal_checks")?.let { checks ->
                 (0 until minOf(checks.length(), 8)).map { index ->

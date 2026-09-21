@@ -41,6 +41,21 @@ class PlannerObservationTest {
         assertFalse(PlannerObservation.render(snapshot, "결과 알려줘").contains(deep.path))
     }
 
+    @Test fun resultTextRetainsItsObservedClickOwnerEvenWhenTheWrapperIsOmitted() {
+        val card = node("0.1", null, true)
+        val title = node("0.1.0", "운동화 A", false)
+        val snapshot = screen(listOf(card, title))
+        val observation = PlannerObservation.render(snapshot, "운동화 담아줘", maxElements = 1)
+        assertTrue(observation.contains("node=1"))
+        assertFalse(observation.lines().any { it.startsWith("node=0 ") })
+        assertTrue(observation.contains("click_target=node=0"))
+        assertEquals(card.path, PlannerObservation.resolveSelector("node=0", snapshot))
+        for (invalid in listOf(card.copy(visible = false), card.copy(enabled = false), card.copy(sensitive = true))) {
+            assertFalse(PlannerObservation.render(screen(listOf(invalid, title)), "운동화 담아줘", 1).contains("click_target="))
+        }
+        assertFalse(PlannerObservation.render(screen(listOf(title)), "운동화 담아줘", 1).contains("click_target="))
+    }
+
     @Test fun privateHiddenAndLocalOcrContentsNeverEnterThePrompt() {
         val private = node("0.secret", "private-secret", false).copy(sensitive = true)
         val hidden = node("0.hidden", "hidden-secret", false).copy(visible = false)

@@ -154,6 +154,20 @@ class BrowserReliabilityTest {
         assertFalse(run.reserveVisualFallback(missing, "frame-4"))
     }
 
+    @Test fun webContentAtThePageEdgeIsObservedButAnOutsideToolbarOrRendererTitleIsNot() {
+        val web = label("0.web", "Page title", ScreenBounds(0, 0, 1000, 2000))
+            .copy(className = "android.webkit.WebView")
+        val nested = web.copy(path = "0.web.0")
+        val result = label("0.web.0.result", "검색 결과: 우주 여행 제출 1", ScreenBounds(24, 160, 976, 230))
+        assertFalse(ScreenContextHandoff.hasUnobservedRenderedContent(screen(web, nested, result)))
+        assertTrue(ScreenContextHandoff.hasUnobservedRenderedContent(screen(web, nested)))
+        assertTrue(ScreenContextHandoff.hasUnobservedRenderedContent(screen(web, nested, result.copy(path = "0.toolbar"))))
+        assertTrue(ScreenContextHandoff.hasUnobservedRenderedContent(screen(web, nested, result.copy(sensitive = true))))
+        assertTrue(ScreenContextHandoff.hasUnobservedRenderedContent(screen(web, nested, result.copy(visible = false))))
+        assertTrue(ScreenContextHandoff.hasUnobservedRenderedContent(screen(web, nested,
+            result.copy(bounds = ScreenBounds(24, 2100, 976, 2200)))))
+    }
+
     @Test fun toolbarTextCannotVerifyCompletionWhenTheRequestedPageBodyIsUnobserved() {
         val runtime = runtime()
         val snapshot = rendererScreen()

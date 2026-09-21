@@ -31,7 +31,7 @@ object ScreenContextHandoff {
         attempt: Int,
         maxRetries: Int,
     ): Boolean = attempt < maxRetries && (
-        snapshot == null || captureEpoch != currentEpoch ||
+        snapshot == null || snapshot.treeTruncated || captureEpoch != currentEpoch ||
             requireSemanticSignal && !snapshot.hasSemanticSignal()
         )
 
@@ -83,7 +83,10 @@ object ScreenContextHandoff {
             val bottom = bounds.bottom - height * 15 / 100
             snapshot.elements.none { node ->
                 node !== surface && node.visible && !node.sensitive &&
-                    node.bounds.centerX in bounds.left..bounds.right && node.bounds.centerY in top..bottom &&
+                    listOf("SurfaceView", "TextureView", "WebView").none(node.className::endsWith) &&
+                    node.bounds.centerX in bounds.left..bounds.right &&
+                    (node.bounds.centerY in top..bottom || surface.className.endsWith("WebView") &&
+                        node.path.startsWith("${surface.path}.") && node.bounds.centerY in bounds.top..bounds.bottom) &&
                     listOfNotNull(node.text, node.contentDescription, node.hintText).any(String::isNotBlank)
             }
         }
@@ -105,8 +108,8 @@ object ScreenContextHandoff {
             )
 
     /**
-     * Planning may reuse a very recent observation even if an animation emitted another event.
-     * Execution still performs a fresh semantic rebind, so a stale target cannot be acted on.
+     * A recent timestamp does not make an old loading shell current. Recollect after an app event;
+     * planning captures can still observe a moving UI and execution performs a fresh semantic rebind.
      */
     fun isRecentPlanningSnapshot(
         snapshot: UiSnapshot,
@@ -115,8 +118,11 @@ object ScreenContextHandoff {
         nowElapsedRealtime: Long,
         capturedAtElapsedRealtime: Long,
         ttlMillis: Long,
+        activeEpoch: Long = snapshot.epoch,
     ): Boolean =
         !snapshot.treeTruncated &&
+            snapshot.epoch == activeEpoch &&
+            !hasVisibleLoadingIndicator(snapshot) &&
             snapshot.packageName == activePackageName &&
             (snapshot.windowId == -1 || activeWindowId == -1 ||
                 snapshot.windowId == activeWindowId) &&

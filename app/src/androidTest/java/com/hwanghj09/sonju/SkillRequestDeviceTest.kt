@@ -16,5 +16,16 @@ class SkillRequestDeviceTest {
         assertEquals("오후 일정", pattern.bind("메모에 오후 일정라고 적어 주세요")?.get("input1")?.value)
         assertNull(pattern.bind("메모에 오후 일정라고 적지 말아줘"))
         assertNull(pattern.bind("메모에 ${'$'}{input1}라고 적어줘"))
+        assertNull(pattern.bind("메모에 가을 일정이라고 적어줘"))
+    }
+
+    @Test fun resultPatternsUseCurrentValuesAndExactLiteralEvidenceOnAndroid() {
+        val parameters = mapOf("input1" to TaskParameter("input1", "여행 준비"))
+        val pattern = requireNotNull(SkillRequestPattern.captureText("저장된 기록: 여행 준비", parameters))
+        val changed = mapOf("input1" to TaskParameter("input1", "회의 자료"))
+        assertTrue(pattern.matchesText("저장된 기록: 회의 자료", changed))
+        assertFalse(pattern.matchesText("저장된 기록: 여행 준비", changed))
+        assertFalse(pattern.matchesText("저장 실패: 회의 자료", changed))
+        assertNull(SkillRequestPattern.captureText("가격 1000원", mapOf("input1" to TaskParameter("input1", "1"))))
     }
 }

@@ -35,6 +35,21 @@ class ScreenContextHandoffTest {
     }
 
     @Test
+    fun partialTreesAreRecapturedWithinTheExistingBudgetEvenWhenLabelsArePresent() {
+        val label = snapshot(epoch = 10).elements.single()
+        val ready = snapshot(epoch = 10).copy(
+            elements = List(4) { label.copy(path = "0.$it") },
+        )
+        val partial = ready.copy(treeTruncated = true)
+        for (semanticRequired in listOf(true, false)) {
+            assertTrue(ScreenContextHandoff.shouldRetryCapture(partial, 10, 10, semanticRequired, 0, 6))
+            assertTrue(ScreenContextHandoff.shouldRetryCapture(partial, 10, 10, semanticRequired, 5, 6))
+            assertFalse(ScreenContextHandoff.shouldRetryCapture(partial, 10, 10, semanticRequired, 6, 6))
+            assertFalse(ScreenContextHandoff.shouldRetryCapture(ready, 10, 10, semanticRequired, 0, 6))
+        }
+    }
+
+    @Test
     fun nullPlanGetsOnlyTheBoundedLoadingGraceEvenWhenTheShellLooksStable() {
         assertTrue(ScreenContextHandoff.shouldWaitForStableReplan(0, 3))
         assertTrue(ScreenContextHandoff.shouldWaitForStableReplan(1, 3))
@@ -121,6 +136,18 @@ class ScreenContextHandoffTest {
                 snapshot, "com.example.target", 7, 3_001, 1_000, 2_000,
             ),
         )
+    }
+
+    @Test
+    fun aFreshTimestampCannotReuseAnOlderLoadingObservationAfterContentChanges() {
+        val before = snapshot(epoch = 10)
+        assertTrue(ScreenContextHandoff.isRecentPlanningSnapshot(before, before.packageName, before.windowId,
+            1001, 1000, 2000, activeEpoch = 10))
+        assertFalse(ScreenContextHandoff.isRecentPlanningSnapshot(before, before.packageName, before.windowId,
+            1001, 1000, 2000, activeEpoch = 11))
+        val loading = before.copy(elements = before.elements + element("0.progress", "로딩 중"))
+        assertFalse(ScreenContextHandoff.isRecentPlanningSnapshot(loading, loading.packageName, loading.windowId,
+            1001, 1000, 2000, activeEpoch = 10))
     }
 
     @Test

@@ -198,7 +198,8 @@ class AutonomySession(
     fun recordPlanningRejection(plan: AgentPlan, snapshot: UiSnapshot, reason: String,
                                 accessibilityFailure: Boolean = false) {
         requestAiRecovery(reason, accessibilityFailure, snapshot)
-        val action = plan.actions.firstOrNull { it.type != ActionType.FINISH } ?: return
+        val action = plan.actions.firstOrNull { it.type != ActionType.FINISH }
+            ?: AgentAction(ActionType.FINISH, "미검증 종료 제안")
         rejectedActions += RejectedAction(snapshot.semanticTemplateFingerprint(),
             actionSignature(canonicalAction(action, snapshot)), reason.take(180))
         if (rejectedActions.size > MAX_CONTEXT_TRACES) rejectedActions.removeAt(0)
@@ -206,11 +207,50 @@ class AutonomySession(
 
     /** A model cannot spend the remaining session repeatedly dispatching a known failed action. */
     fun repeatedActionFailure(action: AgentAction, snapshot: UiSnapshot, resolvedNodeId: String? = null): String? {
+        pendingQueryRefinement(action, snapshot, resolvedNodeId)?.let { return it }
+        val lastTextAction = traces.lastOrNull { it.succeeded &&
+            it.action.type in setOf(ActionType.SET_TEXT, ActionType.SUBMIT_TEXT) }
+        if (lastTextAction?.action?.type == ActionType.SUBMIT_TEXT && lastTextAction.beforePackage == snapshot.packageName &&
+            com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchInputClick(action, snapshot, resolvedNodeId) &&
+            snapshot.elements.any { it.editable && it.visible &&
+                normalizeGoalText(it.text.orEmpty()) == normalizeGoalText(lastTextAction.action.value.orEmpty()) }) {
+            return "검색어는 이미 제출했습니다. 같은 입력창을 다시 열지 말고 결과를 관찰하세요. 로딩 중이면 WAIT, 검색어 변경은 SET_TEXT를 사용하세요."
+        }
         observeRecoveryScreen(snapshot)
         val candidate = canonicalAction(action.copy(target = resolvedNodeId ?: action.target), snapshot)
         return if (actionSignature(candidate) in discouragedActionSignatures()) {
             "현재 화면에서 반복 실패한 동작입니다. 다른 도구나 대상을 선택해야 합니다."
         } else null
+    }
+
+    private fun pendingQueryRefinement(action: AgentAction, snapshot: UiSnapshot, resolvedNodeId: String?): String? {
+        if (action.type != ActionType.CLICK) return null
+        val index = traces.indexOfLast { it.succeeded && it.action.type == ActionType.SET_TEXT }
+        if (index < 0) return null
+        val typed = traces[index]
+        val value = typed.action.value?.takeIf { it.length >= 2 } ?: return null
+        val policy = com.hwanghj09.sonju.verifier.SearchSubmissionPolicy
+        if (typed.beforePackage != snapshot.packageName || traces.drop(index + 1).any { trace ->
+                trace.beforePackage == typed.beforePackage && (trace.action.type == ActionType.SUBMIT_TEXT &&
+                    normalizeGoalText(trace.action.value.orEmpty()) == normalizeGoalText(value) ||
+                    trace.succeeded && trace.beforeObservation?.let {
+                    policy.isSubmitClick(trace.action, it, value)
+                } == true) }) return null
+        val input = snapshot.elements.singleOrNull { it.visible && it.editable && !it.sensitive &&
+            policy.isSearchOrAddressField(it, snapshot) && normalizeGoalText(it.text.orEmpty()) == normalizeGoalText(value) }
+            ?: return null
+        if (policy.isSearchInputClick(action, snapshot, resolvedNodeId)) return null
+        val path = resolvedNodeId ?: UiTargetResolver.resolveClickable(action, snapshot)?.clickablePath ?: return null
+        val labels = snapshot.elements.filter { it.visible && !it.sensitive &&
+            (it.path == path || it.path.startsWith("$path.")) }.flatMap { listOfNotNull(it.text, it.contentDescription) }
+            .map(::normalizeGoalText).filter(String::isNotBlank)
+        val query = normalizeGoalText(input.text.orEmpty())
+        val goal = normalizeGoalText(finalGoal)
+        val refinements = labels.filter { it.contains(query) && it != query }
+        if (refinements.any(goal::contains)) return null
+        return if (refinements.isNotEmpty())
+            "아직 입력한 검색어를 제출하지 않았습니다. 다른 자동완성·브랜드로 범위를 바꾸기 전에 SUBMIT_TEXT 또는 원문 검색 컨트롤로 검색하고 실제 결과를 확인하세요."
+        else null
     }
 
     private fun observeRecoveryScreen(snapshot: UiSnapshot) {
@@ -326,6 +366,8 @@ class AutonomySession(
     fun recordExecution(plan: AgentPlan, snapshot: UiSnapshot, result: ExecutionResult, resolvedNodeId: String? = null) {
         if (result.failureReason == com.hwanghj09.sonju.execution.ExecutionFailureReason.DEVICE_LOCKED) return
         val proposed = plan.actions.firstOrNull { it.type != ActionType.FINISH } ?: return
+        // Count consecutive planning-only stalls, not earlier failures after an actual recovery step.
+        rejectedActions.removeAll { it.signature == ActionType.FINISH.name }
         observe(snapshot)
         val node = snapshot.elements.firstOrNull { it.path == resolvedNodeId && !it.sensitive }
         val stableId = node?.viewId?.takeIf { id -> snapshot.elements.count { it.viewId == id } == 1 }
@@ -335,7 +377,8 @@ class AutonomySession(
             .firstOrNull { label -> snapshot.elements.count { it.text == label || it.contentDescription == label } == 1 &&
                 com.hwanghj09.sonju.logging.RedactionPolicy.redact(label) == label } else null
         val action = if (node != null && proposed.type in setOf(ActionType.CLICK, ActionType.SET_TEXT,
-                ActionType.SUBMIT_TEXT)) proposed.copy(target = stableId ?: uniqueLabel ?: node.path)
+                ActionType.SUBMIT_TEXT, ActionType.SCROLL_UP, ActionType.SCROLL_DOWN,
+                ActionType.SCROLL_LEFT, ActionType.SCROLL_RIGHT)) proposed.copy(target = stableId ?: uniqueLabel ?: node.path)
             else canonicalAction(proposed, snapshot)
         traces += Trace(
             action = action,
@@ -415,11 +458,13 @@ class AutonomySession(
         toolCallCount >= maxToolCalls -> "도구 실행 횟수 한도에 도달해 멈췄어요."
         nowMillis - startedAtMillis - pausedDurationMillis !in 0..maxDurationMillis ->
             "사용자 확인 대기를 제외한 실행 시간 한도에 도달해 멈췄어요."
+        completionPlanningStalled() -> "현재 화면에서 최종 목표가 확인되지 않았고 다음 행동 없이 종료 제안이 반복되어 멈췄어요. 작업은 완료되지 않았습니다."
         hasDetectedLoop() -> "같은 동작이 반복되어 멈췄어요. 현재 화면을 다시 확인해야 합니다."
         else -> null
     }
 
     fun hasDetectedLoop(): Boolean {
+        if (completionPlanningStalled()) return true
         if (traces.filter { !it.succeeded || it.screenChanged == false }.groupBy { trace ->
                 "${trace.beforeFingerprint}:" +
                     actionSignature(trace.action)
@@ -433,6 +478,10 @@ class AutonomySession(
         val unchanged = traces.takeLast(NO_CHANGE_LIMIT)
         return unchanged.size == NO_CHANGE_LIMIT && unchanged.all { it.screenChanged == false }
     }
+
+    private fun completionPlanningStalled(): Boolean = rejectedActions.count {
+        it.screen == recoveryScreen && it.signature == ActionType.FINISH.name
+    } >= REPEATED_ACTION_LIMIT
 
     /** Exact actions that failed twice on the same semantic screen must not be proposed again. */
     fun discouragedActionSignatures(): Set<String> = buildList {

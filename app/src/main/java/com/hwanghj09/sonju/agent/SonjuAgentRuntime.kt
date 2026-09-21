@@ -178,7 +178,9 @@ class SonjuAgentRuntime private constructor(
                 storedStep != null && index == skill.steps.lastIndex &&
                 skill.goalChecks.isNotEmpty()) null else storedStep?.expectedAfterFingerprint ?: skill.exitFingerprint,
             goalChecks = checks,
-            visualFrameHash = if (plan.complete) skill.exitVisualFrameHash else storedStep?.action?.visualFrameHash,
+            visualFrameHash = if (plan.complete) skill.exitVisualFrameHash.takeUnless {
+                goalMatches(skill) && !ScreenContextHandoff.hasUnobservedRenderedContent(snapshot)
+            } else storedStep?.action?.visualFrameHash,
             visualFallback = storedStep?.action?.let { it.type == ActionType.CLICK_COORDINATE || it.visualFrameHash != null } == true,
         )
     }
@@ -187,7 +189,10 @@ class SonjuAgentRuntime private constructor(
         if (skill.parameterizedScreens) snapshot.skillFingerprint(task.parameters) else snapshot.semanticTemplateFingerprint()
 
     private fun completionEvidenceMatches(skill: AppSkill, task: CanonicalTask, snapshot: UiSnapshot): Boolean {
-        val covered = skill.goalChecks.mapNotNull { it.textTemplate?.removePrefix("${'$'}{")?.removeSuffix("}") }.toSet()
+        val covered = skill.goalChecks.flatMap { check ->
+            listOfNotNull(check.textTemplate?.removePrefix("${'$'}{")?.removeSuffix("}")) +
+                check.textPattern?.parts.orEmpty().mapNotNull { it.parameter }
+        }.toSet()
         val parametersVerified = skill.goalParameterKey == null ||
             skill.goalParameterKey == SkillRequestPattern.parameterKey(task.parameters) ||
             task.parameters.isNotEmpty() && covered.containsAll(task.parameters.keys)
@@ -227,8 +232,15 @@ class SonjuAgentRuntime private constructor(
         val intent = SkillRequestPattern.intent(command, parameters)
         if (intent.requestedCompletionLevel != skill.completionLevel ||
             SkillRequestPattern.digest(intent.constraints.toString()) != skill.constraintKey) return null
-        session.bindSkill(skill.skillId, task.copy(appId = skill.appId, taskType = skill.taskType,
-            requestKey = skill.requestKey, parameters = parameters))
+        val bound = task.copy(appId = skill.appId, taskType = skill.taskType,
+            requestKey = skill.requestKey, parameters = parameters)
+        val current = fingerprint(skill, bound, snapshot)
+        // An inapplicable model suggestion is not evidence that a healthy saved route is broken.
+        if (skill.steps.firstOrNull()?.action?.type !in APP_ENTRY_ACTIONS && skill.entryFingerprint != current &&
+            !skill.steps.withIndex().any { (index, step) -> step.entryFingerprint == current &&
+                skill.steps.take(index).all { it.action.type in APP_ENTRY_ACTIONS } } &&
+            !completionEvidenceMatches(skill, bound, snapshot)) return null
+        session.bindSkill(skill.skillId, bound)
         return fastPathPlan(command, snapshot, session)
     }
 
@@ -257,6 +269,32 @@ class SonjuAgentRuntime private constructor(
         val screen = AccessibilityScreenParser.parse(snapshot)
         val task = if (plan.source == PlanSource.SKILL_FAST_PATH) session?.boundSkillTask ?: canonicalTask(command, screen)
             else canonicalTask(command, screen)
+        if (task.taskType == "search" && snapshot.elements.any { it.visible && it.editable &&
+                com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(it, snapshot) } &&
+            !plan.visualFrameVerified) {
+            val history = session?.history.orEmpty()
+            val lastInput = history.indexOfLast { it.succeeded && (it.action.type == ActionType.SET_TEXT ||
+                it.beforeObservation?.let { before ->
+                    com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchInputClick(it.action, before)
+                } == true) }
+            val submitted = history.drop(lastInput + 1).any { trace ->
+                trace.succeeded && trace.screenChanged == true && (trace.action.type == ActionType.SUBMIT_TEXT ||
+                    trace.beforeObservation?.let { before ->
+                        com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSubmitClick(trace.action, before)
+                    } == true)
+            }
+            val resultContext = snapshot.elements.any { node -> node.visible && !node.sensitive && !node.editable &&
+                Regex("검색\\s*결과|search\\s*results?|results?\\s*for|no\\s*results?|[0-9]+\\s*results?", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(listOfNotNull(node.text, node.contentDescription).joinToString(" ")) }
+            val editing = snapshot.elements.any { it.focused && it.editable &&
+                com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(it, snapshot) }
+            if (!submitted && (lastInput >= 0 || editing || !resultContext)) return false
+        }
+        if (task.taskType == "search" && plan.goalChecks.isNotEmpty() && plan.goalChecks.all { check ->
+                val evidence = check.resolveNode(snapshot)
+                evidence == null || snapshot.elements.any { input -> input.editable &&
+                    (input.path == evidence.path || evidence.path.startsWith("${input.path}.")) }
+            }) return false
         if (task.taskType != "open_app" && ScreenContextHandoff.hasUnobservedRenderedContent(snapshot) &&
             !plan.visualFrameVerified) return false
         if (plan.source == PlanSource.SKILL_FAST_PATH) {
@@ -315,7 +353,9 @@ class SonjuAgentRuntime private constructor(
         val completion = session.latestPlan?.takeIf { it.goalCompleted } ?: return
         if (!goalSatisfied(command, completion, finalSnapshot, session)) return
         val initialScreen = AccessibilityScreenParser.parse(session.initialSnapshot)
-        val task = SkillLearner.bindInputs(session.boundSkillTask ?: canonicalTask(command, initialScreen), session.history)
+        val boundTask = session.boundSkillTask ?: canonicalTask(command, initialScreen)
+        val task = if (completion.source == PlanSource.SKILL_FAST_PATH) boundTask
+            else SkillLearner.bindInputs(boundTask, session.history)
         val finalFingerprint = finalSnapshot.skillFingerprint(task.parameters)
         val initialFingerprint = session.initialSnapshot.skillFingerprint(task.parameters)
         val checks = completion.goalChecks.mapNotNull { StoredGoalCheck.capture(it, finalSnapshot, task.parameters) }
@@ -341,7 +381,8 @@ class SonjuAgentRuntime private constructor(
         if (repair != null) {
             val existing = skillRepository.get(repair.skillId) ?: return
             if (existing.version != repair.version) return
-            if (repair.stepIndex == existing.steps.size && session.history.drop(repair.traceIndex).isEmpty()) {
+            if (repair.stepIndex == existing.steps.size && session.history.drop(repair.traceIndex).isEmpty() &&
+                task.parameters.keys == existing.parameters.map { it.name }.toSet()) {
                 // Old caches or changed readouts need fresh goal evidence, not a fabricated action.
                 skillRepository.save(existing.copy(goalChecks = checks,
                     exitFingerprint = finalFingerprint, exitPackage = finalSnapshot.packageName,
@@ -368,7 +409,10 @@ class SonjuAgentRuntime private constructor(
                         existing.steps.take(index).all { it.action.type in APP_ENTRY_ACTIONS }
                 }.singleOrNull()?.index
                 val repaired = when {
-                    observed.entryFingerprint == existing.entryFingerprint -> SkillLearner.repair(existing, 0, observed)
+                    observed.entryFingerprint == existing.entryFingerprint ||
+                        observed.steps.first().action.type in APP_ENTRY_ACTIONS &&
+                        observed.steps.first().action == existing.steps.firstOrNull()?.action ->
+                        SkillLearner.repair(existing, 0, observed)
                     startIndex != null -> SkillLearner.repair(existing, startIndex, observed)
                     else -> null
                 }
@@ -408,6 +452,15 @@ class SonjuAgentRuntime private constructor(
         skillRepository.save(skill.copy(version = (existing?.version ?: 0) + 1,
             exitVisualFrameHash = completion.visualFrameHash, goalChecks = checks,
             exitPackage = finalSnapshot.packageName))
+    }
+
+    fun completionRejectionReason(command: String, plan: AgentPlan, snapshot: UiSnapshot): String {
+        val checksMatch = plan.goalChecks.isNotEmpty() && plan.goalChecks.all { it.matches(snapshot) }
+        val observation = if (checksMatch) "제시한 노드와 값은 현재 관찰과 일치합니다. 화면을 읽지 못한 문제가 아닙니다."
+            else "제시한 완료 근거가 현재 관찰에서 충분히 확인되지 않습니다."
+        return "$observation 고정 최종 목표 '${command.take(300)}'는 아직 달성되지 않았습니다. " +
+            "현재 검색 결과나 후보 목록을 최종 목표로 바꾸지 마세요. 이미 끝낸 입력·검색을 반복하지 말고, " +
+            "관찰된 클릭 컨트롤로 가능한 상세 탐색·다음 준비 단계 하나를 제안하세요. 실제 확정 동작의 제한은 유지합니다."
     }
 
     fun recordPlanningFailure(plan: AgentPlan, session: AutonomySession, reason: String,
@@ -518,6 +571,7 @@ class SonjuAgentRuntime private constructor(
                 ScrollDirection.RIGHT -> ActionType.SCROLL_RIGHT
             },
             description = "저장된 방향으로 화면을 이동합니다.",
+            target = target?.legacySelector(),
         )
         is PlannedAction.OpenApp -> AgentAction(ActionType.OPEN_APP, "앱을 엽니다.", packageOrLabel, initialQuery)
         is PlannedAction.OpenUrl -> AgentAction(ActionType.OPEN_URL, "저장된 웹페이지를 엽니다.", url, browserPackage)

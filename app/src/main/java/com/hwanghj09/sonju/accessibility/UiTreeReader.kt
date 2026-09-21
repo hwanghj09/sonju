@@ -16,7 +16,9 @@ object UiTreeReader {
     internal const val MAX_ELEMENTS = 2_000
     // Modern Compose screens can place visible controls below 24 wrapper levels. Naver Map's
     // first visible route button, for example, is exposed at depth 28.
-    private const val MAX_DEPTH = 32
+    // Browser + document semantics can exceed 32 levels on ordinary search result pages.
+    // The 2,000-node and interruption limits still bound the total traversal.
+    private const val MAX_DEPTH = 128
     private data class TraversalState(
         val elements: MutableList<UiElement> = mutableListOf(),
         val arithmeticDisplays: MutableMap<String, UiElement> = mutableMapOf(),
@@ -174,7 +176,10 @@ object UiTreeReader {
         state.visitedNodes += 1
 
         val element = runCatching {
-            val rawText = node.text?.toString()?.trim()?.take(if (node.isEditable || webContentAncestor) 4_000 else 120)
+            val availableActions = node.actionList.mapNotNullTo(linkedSetOf()) { action -> action.toPlannerAction() }
+            val editable = hasEditableSemantics(node.isEditable, availableActions)
+            val rawText = node.text?.toString()?.let { if (editable) it else it.trim() }
+                ?.take(if (editable || webContentAncestor) 4_000 else 120)
             val rawDescription = node.contentDescription?.toString()?.trim()?.take(120)
             val rawStateDescription = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 node.stateDescription?.toString()?.trim()?.take(120)
@@ -185,9 +190,6 @@ object UiTreeReader {
             val rawPaneTitle = node.paneTitle?.toString()?.trim()?.take(120)
             val rawTooltipText = node.tooltipText?.toString()?.trim()?.take(120)
             val rawViewId = node.viewIdResourceName
-            val availableActions = node.actionList.mapNotNullTo(linkedSetOf()) { action ->
-                action.toPlannerAction()
-            }
             val semanticValues = listOfNotNull(
                 rawText,
                 rawDescription,
@@ -228,7 +230,7 @@ object UiTreeReader {
                 contentDescription = rawDescription.takeUnless { sensitive },
                 bounds = ScreenBounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
                 clickable = node.isClickable,
-                editable = hasEditableSemantics(node.isEditable, availableActions),
+                editable = editable,
                 scrollable = node.isScrollable,
                 enabled = node.isEnabled,
                 visible = node.isVisibleToUser,
@@ -571,6 +573,7 @@ object UiTreeReader {
         hintText = null,
         paneTitle = null,
         tooltipText = null,
+        imeAction = null,
         sensitive = true,
     )
     private val concatenatedWonAmountsPattern = Regex(

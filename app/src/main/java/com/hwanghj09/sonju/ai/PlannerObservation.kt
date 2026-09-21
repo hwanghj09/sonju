@@ -50,6 +50,13 @@ object PlannerObservation {
             if (candidates.size > selected.size) appendLine("일부 노드는 요약에서 생략됨. 항목이 없다고 단정하지 말고 검색/스크롤 후 재관찰한다.")
             candidates.filter { it in selected }.forEach { node ->
                 appendLine(node.compactLine().replaceFirst("path=${node.path}", nodeIds.getValue(node.path)))
+                if (!node.clickable && UiNodeAction.CLICK !in node.availableActions) {
+                    val owner = com.hwanghj09.sonju.agent.UiTargetResolver.resolveClickable(
+                        com.hwanghj09.sonju.agent.AgentAction(com.hwanghj09.sonju.agent.ActionType.CLICK, "", node.path), snapshot)
+                        ?.clickablePath?.let { path -> snapshot.elements.singleOrNull { it.path == path } }
+                        ?.takeIf { it.visible && it.enabled && !it.sensitive }
+                    if (owner != null) appendLine("  click_target=${nodeIds.getValue(owner.path)} (관찰된 상위 클릭 컨트롤)")
+                }
                 if (interactive(node) && labels(node).isBlank()) {
                     val children = candidates.asSequence()
                         .filter { it.path.startsWith("${node.path}.") && labels(it).isNotBlank() }

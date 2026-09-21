@@ -1,6 +1,7 @@
 package com.hwanghj09.sonju.verifier
 
 import com.hwanghj09.sonju.agent.ActionType
+import com.hwanghj09.sonju.agent.UiNodeAction
 import com.hwanghj09.sonju.agent.AgentAction
 import com.hwanghj09.sonju.agent.AgentPlan
 import com.hwanghj09.sonju.agent.AppWorkflowRouter
@@ -220,7 +221,7 @@ class DeterministicActionVerifier(
         val grounding = if (renderedScrollSurface != null) null else ground(action, screen)
         val grounded = when (grounding) {
             is GroundingResult.Success -> grounding
-            is GroundingResult.Ambiguous -> return if (task.risk >= TaskRisk.HIGH) {
+            is GroundingResult.Ambiguous -> return if (task.risk >= TaskRisk.HIGH && !scroll) {
                 VerificationResult.Blocked("고위험 동작의 대상이 여러 개라 안전하게 멈췄습니다.")
             } else {
                 VerificationResult.NeedsReplan("화면 대상이 여러 개라 하나로 식별해야 합니다.")
@@ -349,6 +350,12 @@ class DeterministicActionVerifier(
             GroundingQuery(
                 selector = action.target,
                 interaction = InteractionRequirement.SCROLL,
+                scrollAction = when (action.type) {
+                    ActionType.SCROLL_UP -> UiNodeAction.SCROLL_UP
+                    ActionType.SCROLL_DOWN -> UiNodeAction.SCROLL_DOWN
+                    ActionType.SCROLL_LEFT -> UiNodeAction.SCROLL_LEFT
+                    else -> UiNodeAction.SCROLL_RIGHT
+                },
             ),
             screen,
         )

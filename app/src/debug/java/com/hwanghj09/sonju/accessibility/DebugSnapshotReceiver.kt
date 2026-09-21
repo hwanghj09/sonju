@@ -15,7 +15,8 @@ class DebugSnapshotReceiver : BroadcastReceiver() {
         output.delete()
         val service = SonjuAccessibilityService.instance ?: return
         val root = service.windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
-            .sortedByDescending { it.layer }.mapNotNull { it.root }
+            .sortedWith(compareByDescending<AccessibilityWindowInfo> { it.isActive }
+                .thenByDescending { it.isFocused }.thenByDescending { it.layer }).mapNotNull { it.root }
             .firstOrNull { it.packageName?.toString() != context.packageName } ?: return
         val snapshot = UiTreeReader.snapshot(root, SystemClock.elapsedRealtime(), service.currentDisplayBounds())
         output.writer().use { writer ->

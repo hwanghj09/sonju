@@ -118,6 +118,8 @@ data class UiElement(
     val dismissable: Boolean = false,
     val heading: Boolean = false,
     val availableActions: Set<UiNodeAction> = emptySet(),
+    /** Actual IME option, attached only to the uniquely focused, value-matched live editor. */
+    val imeAction: Int? = null,
 ) {
     fun compactLine(): String {
         val safeText = if (sensitive) "[민감정보 가림]" else text.orEmpty().take(if (editable) 4_000 else 80)
@@ -147,6 +149,7 @@ data class UiElement(
             }
             if (focusable) append(" focusable")
             if (focused) append(" focused")
+            if (!sensitive && imeAction != null) append(" imeAction=").append(imeAction)
             if (accessibilityFocused) append(" accessibilityFocused")
             if (longClickable) append(" longClickable")
             if (dismissable) append(" dismissable")
@@ -248,6 +251,7 @@ data class UiSnapshot(
                     append(element.tooltipText.orEmpty()).append('|')
                     append(element.focusable).append('|').append(element.focused).append('|')
                     append(element.accessibilityFocused).append('|')
+                    append(element.imeAction).append('|')
                     append(element.longClickable).append('|').append(element.dismissable).append('|')
                     append(element.heading).append('|')
                     append(element.availableActions.sortedBy { it.name }.joinToString(",") { it.name })
@@ -266,8 +270,8 @@ data class UiSnapshot(
     /** Content comparison for postconditions; capability provenance is not a visible UI change. */
     fun hasSameObservableContentAs(other: UiSnapshot): Boolean =
         packageName != "unknown" && other.packageName != "unknown" &&
-            copy(trustedSettingsRoute = null).screenFingerprint() ==
-            other.copy(trustedSettingsRoute = null).screenFingerprint()
+            copy(trustedSettingsRoute = null, elements = elements.map { it.copy(imeAction = null) }).screenFingerprint() ==
+            other.copy(trustedSettingsRoute = null, elements = other.elements.map { it.copy(imeAction = null) }).screenFingerprint()
 
     /** Layout animations and focus do not change any displayed value or control identity. */
     fun hasSameContentIgnoringLayoutAs(other: UiSnapshot): Boolean {

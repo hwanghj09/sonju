@@ -1232,12 +1232,15 @@ class SonjuAccessibilityService : AccessibilityService() {
                         handleOverlayPlan(command, snapshot, reused ?: plan)
                     },
                     onFailure = {
+                        debugTrace("model failure type=${it.javaClass.simpleName} reason=" +
+                            (it.message?.takeIf { message -> message.startsWith("OpenAI ") }?.take(160) ?: "plan_or_transport"))
                         if (!retryTransientPlanning(command)) {
                             val madeProgress = autonomySession
                                 ?.takeIf { session -> session.finalGoal == command }
                                 ?.successfulActions()
                                 ?.isNotEmpty() == true
                             finishAutonomyAttempt()
+                            debugTrace("command failed source=OPENAI_STRUCTURE failure=PLANNING_FAILED")
                             if (madeProgress) {
                                 deliverScreenExplanation(
                                     "요청을 진행했지만 마지막 화면에서 완료 상태를 확인하지 못해 멈췄어요. " +
@@ -1346,7 +1349,8 @@ class SonjuAccessibilityService : AccessibilityService() {
                     }
                 }.joinToString("\n").take(1600)
                 autonomySession?.let {
-                    architectureRuntime.recordPlanningFailure(plan, it, "완료 근거가 현재 화면과 일치하지 않습니다.\n$failures")
+                    architectureRuntime.recordPlanningFailure(plan, it,
+                        architectureRuntime.completionRejectionReason(command, plan, snapshot) + "\n$failures", snapshot)
                 }
                 if (!scheduleProactiveReplan(
                         command,
@@ -1417,8 +1421,10 @@ class SonjuAccessibilityService : AccessibilityService() {
                 val session = autonomySession
                 if (session != null && (verification is VerificationResult.NeedsReplan || hasNoAction)) {
                     val targetMissing = (verification as? VerificationResult.NeedsReplan)?.accessibilityTargetMissing == true
+                    val recoveryReason = if (hasNoAction) architectureRuntime.completionRejectionReason(command, plan, snapshot)
+                        else reason
                     val noStructuredTarget = hasNoAction && plan.source == PlanSource.OPENAI_STRUCTURE && !plan.goalCompleted
-                    architectureRuntime.recordPlanningFailure(plan, session, reason, snapshot,
+                    architectureRuntime.recordPlanningFailure(plan, session, recoveryReason, snapshot,
                         accessibilityFailure = targetMissing || noStructuredTarget)
                     if (session.visualFallbackActive && tryVisualCommandFallback(command, snapshot)) return
                     if (scheduleProactiveReplan(command, "현재 화면부터 AI가 다른 실행 경로를 찾고 있어요…")) return
@@ -2351,7 +2357,8 @@ class SonjuAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun snapshotWithTrustedRoute(snapshot: UiSnapshot): UiSnapshot {
+    private fun snapshotWithTrustedRoute(rawSnapshot: UiSnapshot): UiSnapshot {
+        val snapshot = snapshotWithEditorAction(rawSnapshot)
         if (getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true) {
             return snapshot.copy(trustedSettingsRoute = null,
                 userIntervention = com.hwanghj09.sonju.agent.UserIntervention.Kind.DEVICE_UNLOCK)
@@ -2386,6 +2393,19 @@ class SonjuAccessibilityService : AccessibilityService() {
         }
         if (!fresh) clearTrustedSettingsContext()
         return untrustedSnapshot
+    }
+
+    private fun snapshotWithEditorAction(snapshot: UiSnapshot): UiSnapshot {
+        val clean = snapshot.copy(elements = snapshot.elements.map { it.copy(imeAction = null) })
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return clean
+        val field = clean.elements.singleOrNull { it.focused && it.editable && it.visible &&
+            it.enabled && !it.sensitive } ?: return clean
+        val root = bestAvailableApplicationRoot()?.takeIf { it.windowId == clean.windowId &&
+            it.packageName?.toString() == clean.packageName } ?: return clean
+        val input = nodeAtPath(root, field.path) ?: return clean
+        val editor = matchedInputConnection(input, clean.packageName, field.text.orEmpty()) ?: return clean
+        val action = editor.first.imeOptions and android.view.inputmethod.EditorInfo.IME_MASK_ACTION
+        return clean.copy(elements = clean.elements.map { if (it.path == field.path) it.copy(imeAction = action) else it })
     }
 
     private fun clearTrustedSettingsContext() {
@@ -2581,6 +2601,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         }
         if (activeExecution != null) stopCurrentExecution()
         val generation = ++executionGeneration
+        textSubmissionDispatch = null
         verifiedPostconditionGeneration = -1L
         executionActive = true
         lastExecutionMethod = null
@@ -2594,6 +2615,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             terminalDelivered = true
             if (activeExecution?.generation == generation) activeExecution = null
             if (generation == executionGeneration) {
+                textSubmissionDispatch = null
                 executionActive = false
                 if (!commandControlActive) hideControlGlow()
                 // The verifier already captured the exact after-state. Keep that immutable
@@ -2736,6 +2758,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         val pendingExecution = activeExecution
         activeExecution = null
         executionGeneration += 1
+        textSubmissionDispatch = null
         executionActive = false
         eventMonitor.cancel()
         overlayCommandExecutionActive = false
@@ -3164,6 +3187,7 @@ class SonjuAccessibilityService : AccessibilityService() {
                 nowElapsedRealtime = capturedAtElapsedRealtime,
                 capturedAtElapsedRealtime = observed.capturedAtElapsedRealtime,
                 ttlMillis = PLANNING_SNAPSHOT_TTL_MILLIS,
+                activeEpoch = captureEpoch,
             )
         }?.let { observed ->
             debugTrace(
@@ -3204,6 +3228,7 @@ class SonjuAccessibilityService : AccessibilityService() {
                         debugTrace(
                             "capture retry=$attempt package=${snapshot?.packageName.orEmpty()} " +
                                 "elements=${snapshot?.elements?.size ?: 0} " +
+                                "truncated=${snapshot?.treeTruncated} " +
                                 "captureEpoch=$captureEpoch currentEpoch=$currentEpoch " +
                                 "elapsedMs=$captureMillis",
                         )
@@ -3791,6 +3816,18 @@ class SonjuAccessibilityService : AccessibilityService() {
                     return@verifyActionPostconditionAsync
                 }
                 if (!verified) {
+                    val submission = textSubmissionDispatch?.takeIf { it.generation == generation }
+                    if (action.type == ActionType.SUBMIT_TEXT && submission != null && submission.method < 3 &&
+                        afterSnapshot != null && submission.before.hasSameContentIgnoringLayoutAs(afterSnapshot) &&
+                        !ScreenContextHandoff.hasVisibleLoadingIndicator(afterSnapshot)) {
+                        debugTrace("submit-text accepted without search effect; trying next verified method")
+                        submitTextAsync(action, submission.inputPath, submission.before, generation, startedAt,
+                            afterMethod = submission.method) { dispatched ->
+                            if (dispatched) mainHandler.postDelayed(verifyPostcondition, POSTCONDITION_INITIAL_DELAY_MILLIS)
+                            else failPostcondition(afterSnapshot)
+                        }
+                        return@verifyActionPostconditionAsync
+                    }
                     val unchangedScreen = afterSnapshot != null &&
                         expectedSnapshot.hasSameObservableContentAs(afterSnapshot)
                     val unchangedClickTarget = unchangedScreen &&
@@ -3985,6 +4022,11 @@ class SonjuAccessibilityService : AccessibilityService() {
                     // Domain arrival proves navigation; the next observation separately verifies login/results.
                     com.hwanghj09.sonju.verifier.WebNavigationPolicy.arrived(action.target, it)
                 } == true
+                action.type == ActionType.SUBMIT_TEXT -> stableCapture &&
+                    (expectedScreenFingerprint == null || afterSnapshot.semanticTemplateFingerprint() == expectedScreenFingerprint) &&
+                    textSubmissionDispatch?.takeIf { it.generation == generation }?.let {
+                        com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.hasObservedEffect(it.before, afterSnapshot, it.inputPath)
+                    } == true
                 expectedScreenFingerprint != null ->
                     afterSnapshot?.semanticTemplateFingerprint() == expectedScreenFingerprint &&
                         if (action.type == ActionType.SET_TEXT) {
@@ -3998,7 +4040,6 @@ class SonjuAccessibilityService : AccessibilityService() {
                 action.type in setOf(
                     ActionType.CLICK,
                     ActionType.CLICK_COORDINATE,
-                    ActionType.SUBMIT_TEXT,
                 ) ->
                     stableCapture && afterSnapshot!!.epoch > beforeSnapshot.epoch &&
                         !beforeSnapshot.hasSameObservableContentAs(afterSnapshot)
@@ -4728,16 +4769,23 @@ class SonjuAccessibilityService : AccessibilityService() {
         }
     }
 
+    private data class TextSubmissionDispatch(
+        val generation: Long, val method: Int, val before: UiSnapshot, val inputPath: String,
+    )
+    private var textSubmissionDispatch: TextSubmissionDispatch? = null
+
     private fun submitTextAsync(
         action: AgentAction,
         resolvedNodeId: String?,
         expectedSnapshot: UiSnapshot,
         generation: Long,
         startedAt: Long,
+        afterMethod: Int = -1,
+        focusSettled: Boolean = false,
         callback: (Boolean) -> Unit,
     ) {
         val value = action.value
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || value.isNullOrBlank()) {
+        if (value.isNullOrBlank()) {
             callback(false)
             return
         }
@@ -4779,75 +4827,119 @@ class SonjuAccessibilityService : AccessibilityService() {
                 return@captureLiveSnapshotAsync
             }
             clearTrustedSettingsContext()
-            lastDispatchSourceEpoch = captureEpoch
-            val focused = input.isFocused || input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            val clicked = input.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (performEditorSubmit(input, liveSnapshot.packageName, value) ||
-                input.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)) {
-                lastExecutionMethod = ExecutionMethod.ACCESSIBILITY_NODE_ACTION
-                invalidateObservedSnapshot()
-                callback(true)
+            if (!focusSettled) {
+                // Clicking an already focused editor can move the caret or open selection UI.
+                if (!input.isFocused && !input.performAction(AccessibilityNodeInfo.ACTION_FOCUS) &&
+                    !input.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    callback(false)
+                    return@captureLiveSnapshotAsync
+                }
+                mainHandler.postDelayed({
+                    if (generation != executionGeneration || !executionWithinDeadline(startedAt)) callback(false)
+                    else submitTextAsync(action, path, liveSnapshot, generation, startedAt, afterMethod, true, callback)
+                }, TEXT_INPUT_FOCUS_SETTLE_MILLIS)
                 return@captureLiveSnapshotAsync
             }
-            if (!focused && !clicked) {
+            if (!com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.isSearchOrAddressField(
+                    liveSnapshot.elements.single { it.path == path }, liveSnapshot)) {
                 callback(false)
                 return@captureLiveSnapshotAsync
             }
-            mainHandler.postDelayed(
-                {
-                    if (generation != executionGeneration || !executionWithinDeadline(startedAt)) {
-                        callback(false)
-                        return@postDelayed
-                    }
-                    val currentRoot = bestAvailableApplicationRoot()
-                    val currentInput = currentRoot?.takeIf {
-                        it.packageName?.toString() == liveSnapshot.packageName &&
-                            it.windowId == liveSnapshot.windowId
-                    }?.let { current ->
-                        val refreshed = UiTreeReader.snapshot(current, epoch.get())
-                        com.hwanghj09.sonju.agent.UiTargetResolver.rebindEditable(liveSnapshot, refreshed, path)
-                            ?.let { nodeAtPath(current, it.path) }
-                    }
-                    val dispatched = currentInput != null && !currentInput.isPassword &&
-                        nodeSupportsTextInput(currentInput) && currentInput.isEnabled &&
-                        currentInput.isVisibleToUser &&
-                        sameNormalizedText(currentInput.text?.toString().orEmpty(), value) &&
-                        (performEditorSubmit(currentInput, liveSnapshot.packageName, value) || currentInput.performAction(
-                            AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
-                        ))
-                    if (dispatched) {
-                        lastExecutionMethod = ExecutionMethod.ACCESSIBILITY_NODE_ACTION
-                        invalidateObservedSnapshot()
-                    }
-                    callback(dispatched)
-                },
-                TEXT_INPUT_FOCUS_SETTLE_MILLIS,
-            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val info = inputMethod?.currentInputEditorInfo?.takeIf { it.packageName == liveSnapshot.packageName }
+                if (info != null && ((info.imeOptions and 0xff) in setOf(4, 5, 7) ||
+                    !info.actionLabel.isNullOrBlank() && com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.editorAction(
+                        info.imeOptions, info.actionId, info.actionLabel?.toString()) == null)) {
+                    callback(false)
+                    return@captureLiveSnapshotAsync
+                }
+            }
+            for (method in (afterMethod + 1)..3) {
+                if (generation != executionGeneration || epoch.get() != captureEpoch ||
+                    !runCatching { input.refresh() }.getOrDefault(false) || !input.isFocused ||
+                    !sameNormalizedText(input.text?.toString().orEmpty(), value)) break
+                lastDispatchSourceEpoch = captureEpoch
+                val accepted = runCatching { when (method) {
+                    0 -> performEditorSubmit(input, liveSnapshot.packageName, value)
+                    1 -> Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                        input.actionList.any { it.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id } &&
+                        input.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+                    2 -> performEditorSubmit(input, liveSnapshot.packageName, value, enterKey = true)
+                    else -> clickObservedImeSubmit(input, liveSnapshot.packageName, value)
+                } }.getOrDefault(false)
+                if (accepted) {
+                    textSubmissionDispatch = TextSubmissionDispatch(generation, method, liveSnapshot, path)
+                    lastExecutionMethod = ExecutionMethod.ACCESSIBILITY_NODE_ACTION
+                    invalidateObservedSnapshot()
+                    debugTrace("submit-text dispatched method=$method; awaiting search effect")
+                    callback(true)
+                    return@captureLiveSnapshotAsync
+                }
+            }
+            callback(false)
         }
     }
 
     private fun nodeSupportsTextInput(node: AccessibilityNodeInfo): Boolean =
         node.isEditable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }
 
-    /** Use the editor's real Search/Go/Done action; ACTION_IME_ENTER can carry actionId=0. */
-    private fun performEditorSubmit(input: AccessibilityNodeInfo, expectedPackage: String, value: String): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || !input.isFocused) return false
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun matchedInputConnection(input: AccessibilityNodeInfo, expectedPackage: String, value: String):
+        Pair<android.view.inputmethod.EditorInfo, android.accessibilityservice.InputMethod.AccessibilityInputConnection>? = runCatching {
+        val method = inputMethod ?: return null
+        val info = method.currentInputEditorInfo ?: return null
+        val connection = method.currentInputConnection ?: return null
+        if (!input.refresh() || !input.isFocused || !input.isEnabled || !input.isVisibleToUser ||
+            info.packageName != expectedPackage || input.packageName?.toString() != expectedPackage ||
+            input.isPassword || !nodeSupportsTextInput(input) ||
+            !sameNormalizedText(input.text?.toString().orEmpty(), value)) return null
+        val surrounding = connection.getSurroundingText(4_001, 4_001, 0) ?: return null
+        if (!com.hwanghj09.sonju.verifier.SearchSubmissionPolicy.matchesConnectionValue(
+                value, surrounding.text.toString(), surrounding.offset)) return null
+        info to connection
+    }.getOrNull()
+
+    /** The editor action is a dispatch, never an acknowledgement of a completed search. */
+    private fun performEditorSubmit(input: AccessibilityNodeInfo, expectedPackage: String, value: String,
+        enterKey: Boolean = false): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
         return runCatching {
-            val method = inputMethod ?: return false
-            val info = method.currentInputEditorInfo ?: return false
-            val connection = method.currentInputConnection ?: return false
-            if (info.packageName != expectedPackage || input.isPassword ||
-                !sameNormalizedText(input.text?.toString().orEmpty(), value)) return false
-            val surrounding = connection.getSurroundingText(4_001, 4_001, 0) ?: return false
-            if (surrounding.offset != 0 || !sameNormalizedText(surrounding.text.toString(), value)) return false
-            val editorAction = info.imeOptions and android.view.inputmethod.EditorInfo.IME_MASK_ACTION
-            if (editorAction !in setOf(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH,
-                    android.view.inputmethod.EditorInfo.IME_ACTION_GO,
-                    android.view.inputmethod.EditorInfo.IME_ACTION_DONE)) return false
-            connection.performEditorAction(editorAction)
-            debugTrace("submit-text editor action=$editorAction packageMatched=true valueMatched=true")
+            val (info, connection) = matchedInputConnection(input, expectedPackage, value) ?: return false
+            val policy = com.hwanghj09.sonju.verifier.SearchSubmissionPolicy
+            if (enterKey) {
+                if (!policy.allowsEnterKey(info.imeOptions, info.inputType) || !info.actionLabel.isNullOrBlank()) return false
+                val now = SystemClock.uptimeMillis()
+                for (keyAction in listOf(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.ACTION_UP)) {
+                    connection.sendKeyEvent(android.view.KeyEvent(now, SystemClock.uptimeMillis(), keyAction,
+                        android.view.KeyEvent.KEYCODE_ENTER, 0, 0, android.view.KeyCharacterMap.VIRTUAL_KEYBOARD,
+                        0, android.view.KeyEvent.FLAG_SOFT_KEYBOARD or android.view.KeyEvent.FLAG_KEEP_TOUCH_MODE))
+                }
+            } else {
+                val editorAction = policy.editorAction(info.imeOptions, info.actionId, info.actionLabel?.toString()) ?: return false
+                connection.performEditorAction(editorAction)
+                debugTrace("submit-text editor action=$editorAction packageMatched=true valueMatched=true")
+            }
             true
         }.getOrDefault(false)
+    }
+
+    /** Older Android versions can still expose a real, labelled action in the IME window. */
+    private fun clickObservedImeSubmit(input: AccessibilityNodeInfo, expectedPackage: String, value: String): Boolean {
+        if (!input.refresh() || !input.isFocused || input.packageName?.toString() != expectedPackage ||
+            !sameNormalizedText(input.text?.toString().orEmpty(), value)) return false
+        val roots = windows.filter { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }.mapNotNull { it.root }
+        val candidates = roots.flatMap { root ->
+            val snapshot = UiTreeReader.snapshot(root, epoch.get())
+            snapshot.elements.filter { node -> node.visible && node.enabled && !node.sensitive &&
+                listOfNotNull(node.text, node.contentDescription).any {
+                    it.trim().lowercase() in setOf("검색", "검색하기", "search", "이동", "go", "완료", "done", "enter", "엔터")
+                } }.mapNotNull { node ->
+                com.hwanghj09.sonju.agent.UiTargetResolver.resolveClickable(
+                    AgentAction(ActionType.CLICK, "키보드 검색", node.path), snapshot)?.clickablePath?.let { nodeAtPath(root, it) }
+            }
+        }.distinct()
+        return candidates.singleOrNull()?.let { it.refresh() && it.isVisibleToUser && it.isEnabled &&
+            it.performAction(AccessibilityNodeInfo.ACTION_CLICK) } == true
     }
 
     private fun sameNormalizedText(left: String, right: String): Boolean =

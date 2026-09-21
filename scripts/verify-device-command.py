@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--command", required=True)
     parser.add_argument("--package")
     parser.add_argument("--text", action="append", default=[])
+    parser.add_argument("--exact-text", action="append", default=[], help="Require an entire observed label, not a substring")
     parser.add_argument("--checked", action="append", default=[], metavar="RESOURCE_ID=true|false")
     parser.add_argument("--timeout", type=int, default=200)
     parser.add_argument("--no-model", action="store_true", help="Require a completed run with zero AI calls")
@@ -98,16 +99,18 @@ def main():
         metric = re.search(r"source=(\w+) tools=(\d+) modelCalls=(\d+)", verified[-1]) if verified else None
         package_ok = not args.package or any(node.get("package") == args.package for node in external)
         text_ok = all(any(expected in actual for actual in labels) for expected in args.text)
+        exact_text_ok = all(expected in labels for expected in args.exact_text)
         state_ok = all(len(matches := [node for node in external if node.get("resource-id") == resource]) == 1
                        and matches[0].get("checkable") == "true" and matches[0].get("checked") == expected
                        for resource, expected in states)
         result = dict(command=args.command, serial=args.serial, elapsedSeconds=elapsed,
                       goalVerified=bool(goals), localPostconditionVerified=bool(local),
                       packageMatches=package_ok, expectedTextMatches=text_ok,
+                      expectedExactTextMatches=exact_text_ok,
                       expectedStateMatches=state_ok,
                       source=metric[1] if metric else None, tools=int(metric[2]) if metric else None,
                       modelCalls=int(metric[3]) if metric else None,
-                      passed=bool(verified) and package_ok and text_ok and state_ok and
+                      passed=bool(verified) and package_ok and text_ok and exact_text_ok and state_ok and
                       (args.min_tools == 0 or metric is not None and int(metric[2]) >= args.min_tools) and
                       (not args.no_model or metric is not None and metric[3] == "0"))
         (output / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

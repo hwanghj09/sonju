@@ -341,6 +341,215 @@ class GeneralSkillLifecycleTest {
         assertFalse(WebNavigationPolicy.arrived("https://example.org:8443", browser))
     }
 
+    @Test fun compositeResultEvidenceReplaysNewInputsWithoutStoringTheResult() {
+        val stored = learn(command("여행 준비"), "여행 준비", "작성 완료: 여행 준비 (저장됨)")
+        val encoded = SkillCodec.encode(stored)
+        assertFalse(encoded.contains("여행 준비"))
+        assertFalse(encoded.contains("작성 완료"))
+        repository.save(requireNotNull(SkillCodec.decode(encoded)))
+        assertNotNull(stored.goalChecks.single().textPattern)
+        val request = command("회의 자료")
+        val replay = run(request)
+        execute(replay, requireNotNull(runtime.fastPathPlan(request, start, replay)), start, editor)
+        val result = screen("작성 완료: 회의 자료 (저장됨)", "result")
+        execute(replay, requireNotNull(runtime.fastPathPlan(request, editor, replay)), editor, result)
+        val done = replay.acceptPlan(requireNotNull(runtime.fastPathPlan(request, result, replay)), result)
+        assertTrue(runtime.goalSatisfied(request, done, result, replay))
+        assertFalse(runtime.goalSatisfied(request, done, screen("작성 완료: 여행 준비 (저장됨)", "result"), replay))
+        assertFalse(runtime.goalSatisfied(request, done, screen("작성 실패: 회의 자료 (저장됨)", "result"), replay))
+        assertEquals(0, replay.modelCallCount)
+        runtime.rememberSuccessfulSkill(request, replay, result)
+        assertEquals(1, repository.all().size)
+    }
+
+    @Test fun resultPatternsKeepLiteralNumbersNegationAndPoliteEndingsExact() {
+        val parameters = mapOf("input1" to TaskParameter("input1", "1"))
+        assertNull(SkillRequestPattern.captureText("가격 1000원", parameters))
+        assertNull(SkillRequestPattern.captureText("피자헛", mapOf("input1" to TaskParameter("input1", "피자"))))
+        val pattern = requireNotNull(SkillRequestPattern.captureText("결과: 1 / 1 확인해 주세요", parameters))
+        val changed = mapOf("input1" to TaskParameter("input1", "2"))
+        assertTrue(pattern.matchesText("결과: 2 / 2 확인해 주세요", changed))
+        assertFalse(pattern.matchesText("결과: 2 / 1 확인해 주세요", changed))
+        assertFalse(pattern.matchesText("결과: 2 / 2 확인해줘", changed))
+        assertFalse(pattern.matchesText("결과: 2 / 2 확인하지 마세요", changed))
+        assertFalse(pattern.matchesText("결과: 2 / 2 확인해 주세요", emptyMap()))
+    }
+
+    @Test fun concreteResultEvidenceDoesNotRequireTheOldScreenshotButVisualOnlyEvidenceDoes() {
+        val request = command("여행 준비")
+        val stored = learn(request, "여행 준비", "저장된 기록: 여행 준비")
+        repository.save(stored.copy(exitVisualFrameHash = "old-image"))
+        val replay = run(request)
+        execute(replay, requireNotNull(runtime.fastPathPlan(request, start, replay)), start, editor)
+        val result = screen("저장된 기록: 여행 준비", "result")
+        execute(replay, requireNotNull(runtime.fastPathPlan(request, editor, replay)), editor, result)
+        val done = requireNotNull(runtime.fastPathPlan(request, result, replay))
+        assertNull(done.visualFrameHash)
+        assertTrue(runtime.goalSatisfied(request, done, result, replay))
+        repository.save(stored.copy(exitVisualFrameHash = "old-image", goalChecks = emptyList()))
+        val visualOnly = requireNotNull(runtime.fastPathPlan(request, result, replay))
+        assertEquals("old-image", visualOnly.visualFrameHash)
+        assertFalse(runtime.goalSatisfied(request, visualOnly, result, replay))
+    }
+
+    @Test fun changedKoreanParticlesNeverBecomePartOfTheInputAndLearnAfterModelBinding() {
+        val stored = learn(command("여름 준비"), "여름 준비", "저장된 기록: 여름 준비")
+        val request = "별빛에 가을 일정이라고 적어줘"
+        val run = run(request)
+        assertNull(runtime.fastPathPlan(request, start, run))
+        assertTrue(runtime.skillPlannerContext(request, start, run).contains(stored.skillId))
+        run.reserveModelCall(1)
+        val suggestion = model(AgentAction(ActionType.CLICK, "기록 편집", "org.starlight:id/open"))
+            .copy(skillReuse = SkillReuseSuggestion(stored.skillId, mapOf("input1" to "가을 일정")))
+        execute(run, requireNotNull(runtime.reuseSuggestedSkill(request, suggestion, start, run)), start, editor)
+        val input = requireNotNull(runtime.fastPathPlan(request, editor, run))
+        assertEquals("가을 일정", input.actions.first().value)
+        val result = screen("저장된 기록: 가을 일정", "result")
+        execute(run, input, editor, result)
+        run.acceptPlan(requireNotNull(runtime.fastPathPlan(request, result, run)), result)
+        runtime.rememberSuccessfulSkill(request, run, result)
+        val nextRequest = "별빛에 겨울 일정이라고 적어줘"
+        val next = run(nextRequest)
+        execute(next, requireNotNull(runtime.fastPathPlan(nextRequest, start, next)), start, editor)
+        assertEquals("겨울 일정", requireNotNull(runtime.fastPathPlan(nextRequest, editor, next)).actions.first().value)
+        assertEquals(0, next.modelCallCount)
+        val direction = requireNotNull(SkillRequestPattern.capture("경로를 서울로 설정해줘",
+            mapOf("place" to TaskParameter("place", "서울"))))
+        assertNull(direction.bind("경로를 서울역으로 설정해줘"))
+    }
+
+    @Test fun modelSuggestionForTheWrongScreenDoesNotDamageAHealthySkill() {
+        val stored = learn(command("여행 준비"), "여행 준비")
+        val request = "기록할 내용은 회의 자료야"
+        val unrelated = screen("다른 작업", "another_workflow")
+        val run = AutonomySession(request, unrelated, 0)
+        runtime.skillPlannerContext(request, unrelated, run)
+        run.reserveModelCall(1)
+        val suggestion = model(AgentAction(ActionType.BACK, "편집 화면 찾기"))
+            .copy(skillReuse = SkillReuseSuggestion(stored.skillId, mapOf("input1" to "회의 자료")))
+        assertNull(runtime.reuseSuggestedSkill(request, suggestion, unrelated, run))
+        assertNull(run.activeSkillId)
+        assertNull(run.skillRepair)
+        assertNull(run.consumeSkillFailure())
+        assertEquals(stored, repository.get(stored.skillId))
+    }
+
+    @Test fun observedSearchInputKeepsAnUnusedParserPrefixFixedAndRepairKeepsOriginalSpans() {
+        val request = "검색 연습에서 우주 여행을 검색해줘"
+        val task = com.hwanghj09.sonju.task.CanonicalTask("any", "search",
+            mapOf("query" to TaskParameter("query", "검색 연습에서 우주 여행")), emptyList(),
+            com.hwanghj09.sonju.task.TaskRisk.LOW, requestKey = SkillRequestPattern.digest(request), requestText = request)
+        val history = listOf(AutonomySession.Trace(AgentAction(ActionType.SET_TEXT, "검색어", "0.1", "우주 여행"),
+            "org.starlight", "A", true, "ok", "org.starlight", "B", true, "A", "B"))
+        val bound = SkillLearner.bindInputs(task, history)
+        assertEquals(setOf("input1"), bound.parameters.keys)
+        val stored = requireNotNull(SkillLearner.learn(bound, history, "A", "B"))
+        assertEquals("더 긴 바다 여행", stored.requestPatterns.single()
+            .bind("검색 연습에서 더 긴 바다 여행을 검색해줘")?.get("input1")?.value)
+        assertNull(stored.requestPatterns.single().bind("다른 앱에서 우주 여행을 검색해줘"))
+        val longer = bound.copy(requestText = "검색 연습에서 더 긴 바다 여행을 검색해줘",
+            parameters = mapOf("input1" to TaskParameter("input1", "더 긴 바다 여행")))
+        val replacement = requireNotNull(SkillLearner.learn(longer,
+            history.map { it.copy(action = it.action.copy(value = "더 긴 바다 여행")) }, "A", "B"))
+        assertNull(replacement.parameters.single().requestStart)
+        val repaired = requireNotNull(SkillLearner.repair(stored, 0, replacement))
+        assertEquals(stored.parameters.single().requestStart, repaired.parameters.single().requestStart)
+        assertEquals(stored.parameters.single().requestEnd, repaired.parameters.single().requestEnd)
+    }
+
+    @Test fun completionRepairRemovesAnUnusedOverlappingParameterFromALegacyRoute() {
+        val request = command("여행 준비")
+        val stored = learn(request, "여행 준비")
+        val broad = "별빛에 여행 준비"
+        repository.save(stored.copy(parameters = stored.parameters + SkillParameter("query", requestStart = 0,
+            requestEnd = broad.length), requestPatterns = emptyList()))
+        val repair = run(request)
+        execute(repair, requireNotNull(runtime.fastPathPlan(request, start, repair)), start, editor)
+        val result = screen("저장된 기록: 여행 준비", "result")
+        execute(repair, requireNotNull(runtime.fastPathPlan(request, editor, repair)), editor, result)
+        assertNull(runtime.fastPathPlan(request, result, repair))
+        assertEquals(2, repair.skillRepair!!.stepIndex)
+        repair.acceptPlan(completion(result), result)
+        runtime.rememberSuccessfulSkill(request, repair, result)
+        val updated = repository.all().single()
+        assertEquals(stored.skillId, updated.skillId)
+        assertEquals(setOf("input1"), updated.parameters.map { it.name }.toSet())
+        val changed = command("더 긴 회의 자료")
+        val replay = run(changed)
+        execute(replay, requireNotNull(runtime.fastPathPlan(changed, start, replay)), start, editor)
+        assertEquals("더 긴 회의 자료", requireNotNull(runtime.fastPathPlan(changed, editor, replay)).actions.first().value)
+        assertEquals(0, replay.modelCallCount)
+    }
+
+    @Test fun scrollReplayKeepsTheVerifiedContainerInAllFourDirections() {
+        val directions = listOf(ActionType.SCROLL_UP to UiNodeAction.SCROLL_UP,
+            ActionType.SCROLL_DOWN to UiNodeAction.SCROLL_DOWN,
+            ActionType.SCROLL_LEFT to UiNodeAction.SCROLL_LEFT,
+            ActionType.SCROLL_RIGHT to UiNodeAction.SCROLL_RIGHT)
+        for ((type, supported) in directions) {
+            val request = "별빛 내용을 $type 방향으로 더 보여줘"
+            val body = start.elements.single().copy(path = "0.1", viewId = "org.starlight:id/body",
+                className = "android.widget.ScrollView", clickable = false, scrollable = true,
+                availableActions = setOf(supported))
+            val page = start.copy(elements = listOf(body, body.copy(path = "0.2", viewId = "org.starlight:id/sidebar")))
+            val result = screen("마지막 항목", "result")
+            val learning = AutonomySession(request, page, 0)
+            val action = model(AgentAction(type, "본문 이동", body.path))
+            assertTrue(runtime.verify(request, action, page) is VerificationResult.Allowed)
+            execute(learning, action, page, result, body.path)
+            learning.acceptPlan(completion(result), result)
+            runtime.rememberSuccessfulSkill(request, learning, result)
+            val replay = AutonomySession(request, page, 0)
+            val next = requireNotNull(runtime.fastPathPlan(request, page, replay))
+            val stored = requireNotNull(repository.get(next.skillId!!))
+            repository.save(requireNotNull(SkillCodec.decode(SkillCodec.encode(stored))))
+            assertEquals(type, next.actions.first().type)
+            assertEquals(body.viewId, next.actions.first().target)
+            assertTrue(runtime.verify(request, next, page) is VerificationResult.Allowed)
+            execute(replay, next, page, result, body.path)
+            val done = requireNotNull(runtime.fastPathPlan(request, result, replay))
+            assertTrue(runtime.goalSatisfied(request, done, result, replay))
+            assertEquals(0, replay.modelCallCount)
+        }
+    }
+
+    @Test fun repairFromAnotherAppReplacesTheActuallyObservedLaunchAndRecoveryRoute() {
+        val request = command("여행 준비")
+        val launcher = start.copy(packageName = "org.launcher")
+        val learning = AutonomySession(request, launcher, 0)
+        val launch = model(AgentAction(ActionType.OPEN_APP, "앱 열기", "org.starlight"))
+        execute(learning, launch, launcher, start)
+        execute(learning, model(AgentAction(ActionType.CLICK, "입력 화면", "org.starlight:id/open")), start, editor)
+        val result = screen("여행 준비", "result")
+        execute(learning, model(AgentAction(ActionType.SET_TEXT, "입력", "org.starlight:id/input", "여행 준비")), editor, result)
+        learning.acceptPlan(completion(result), result)
+        runtime.rememberSuccessfulSkill(request, learning, result)
+        val original = repository.all().single()
+
+        val anotherApp = start.copy(packageName = "org.other")
+        val recovery = AutonomySession(request, anotherApp, 0)
+        execute(recovery, requireNotNull(runtime.fastPathPlan(request, anotherApp, recovery)), anotherApp, start)
+        val changedEditor = screen("", "new_input", editable = true)
+        execute(recovery, requireNotNull(runtime.fastPathPlan(request, start, recovery)), start, changedEditor)
+        assertNull(runtime.fastPathPlan(request, changedEditor, recovery))
+        assertTrue(recovery.aiRecoveryRequested)
+        assertEquals(2, recovery.skillRepair!!.stepIndex)
+        execute(recovery, model(AgentAction(ActionType.SET_TEXT, "복구 입력", "org.starlight:id/new_input", "여행 준비")), changedEditor, result)
+        recovery.acceptPlan(completion(result), result)
+        runtime.rememberSuccessfulSkill(request, recovery, result)
+        val repaired = repository.all().single()
+        assertEquals(original.skillId, repaired.skillId)
+        assertEquals(original.version + 1, repaired.version)
+        assertEquals(SkillStatus.ACTIVE, repaired.status)
+        assertEquals(anotherApp.skillFingerprint(emptyMap()), repaired.entryFingerprint)
+        val replay = AutonomySession(request, launcher, 0)
+        execute(replay, requireNotNull(runtime.fastPathPlan(request, launcher, replay)), launcher, start)
+        execute(replay, requireNotNull(runtime.fastPathPlan(request, start, replay)), start, changedEditor)
+        execute(replay, requireNotNull(runtime.fastPathPlan(request, changedEditor, replay)), changedEditor, result)
+        assertTrue(runtime.goalSatisfied(request, requireNotNull(runtime.fastPathPlan(request, result, replay)), result, replay))
+        assertEquals(0, replay.modelCallCount)
+    }
+
     private fun learn(request: String, value: String, resultText: String = value): AppSkill {
         val learning = run(request)
         assertTrue(learning.reserveModelCall(1))
@@ -353,9 +562,10 @@ class GeneralSkillLifecycleTest {
     }
 
     private fun run(request: String) = AutonomySession(request, start, 0)
-    private fun execute(run: AutonomySession, plan: AgentPlan, before: UiSnapshot, after: UiSnapshot) {
+    private fun execute(run: AutonomySession, plan: AgentPlan, before: UiSnapshot, after: UiSnapshot,
+                        resolvedNodeId: String? = null) {
         val accepted = run.acceptPlan(plan, before)
-        run.recordExecution(accepted, before, ExecutionResult(true, "ok", 1, postconditionSatisfied = true))
+        run.recordExecution(accepted, before, ExecutionResult(true, "ok", 1, postconditionSatisfied = true), resolvedNodeId)
         run.observe(after)
     }
     private fun model(action: AgentAction) = AgentPlan("immutable user request", "next", RiskLevel.LOW, .98,

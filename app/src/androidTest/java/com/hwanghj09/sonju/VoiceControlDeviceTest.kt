@@ -134,7 +134,7 @@ class VoiceControlDeviceTest {
 
     /** Instrumentation kills the app process. Restart only an already-enabled service through
      * the visible Settings controls; never write accessibility permissions through the shell. */
-    private fun connectedService(): SonjuAccessibilityService {
+    internal fun connectedService(): SonjuAccessibilityService {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val ui = instrumentation.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
         val context = instrumentation.targetContext
