@@ -1,7 +1,6 @@
 package com.hwanghj09.sonju
 
 import android.Manifest
-import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -14,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
@@ -23,6 +23,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -32,6 +33,7 @@ import androidx.core.widget.doAfterTextChanged
 import androidx.core.widget.NestedScrollView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -56,6 +58,7 @@ import com.hwanghj09.sonju.agent.displayName
 import com.hwanghj09.sonju.ai.OpenAiPlanner
 import com.hwanghj09.sonju.shopping.BaeminOrderLocalPlanner
 import com.hwanghj09.sonju.voice.WakeWordService
+import com.hwanghj09.sonju.voice.ListeningOverlayView
 import com.hwanghj09.sonju.verifier.VerificationResult
 import com.hwanghj09.sonju.verifier.VerifiedPlan
 import java.util.Locale
@@ -72,6 +75,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var commandInput: TextInputEditText
     private lateinit var voiceReviewText: TextView
     private lateinit var voiceButton: MaterialButton
+    private lateinit var listeningOverlay: ListeningOverlayView
     private lateinit var runCommandButton: MaterialButton
     private lateinit var progressCard: MaterialCardView
     private lateinit var progressDetail: TextView
@@ -102,58 +106,24 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var busy = false
     private var requestGeneration = 0L
     private var automaticCommandRunnable: Runnable? = null
+    private var voiceRecognizer: SpeechRecognizer? = null
+    private var voiceRecognitionGeneration = 0L
+    private var voiceStartRunnable: Runnable? = null
+    private var voiceTimeoutRunnable: Runnable? = null
+    private var pendingVoiceAutoExecute: Boolean? = null
+    private var previousLightStatusBars = true
+    private var previousLightNavigationBars = true
+    private val voiceBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = finishVoiceInput()
+    }
 
-    private val voiceLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        resumeWakeWordListening()
-        awaitingVoiceRecognition = false
-        val shouldAutoExecute = autoExecuteVoiceResult
-        autoExecuteVoiceResult = false
-        val launchedOverlaySessionId = voiceOverlaySessionId
-        voiceOverlaySessionId = 0L
-        if (launchedOverlaySessionId != 0L &&
-            (!fromOverlay || externalContextSessionId != launchedOverlaySessionId ||
-                !ContextLifetime.isFresh(
-                    SystemClock.elapsedRealtime(),
-                    externalContextCapturedAtElapsedRealtime,
-                    OVERLAY_CONTEXT_TTL_MILLIS,
-                ))
-        ) {
-            voiceReviewText.visibility = View.GONE
-            val message = getString(R.string.overlay_context_expired)
-            showResult(message, success = false)
-            speak(message)
-            return@registerForActivityResult
-        }
-        if (result.resultCode == Activity.RESULT_OK) {
-            val heard = result.data
-                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull()
-            if (!heard.isNullOrBlank()) {
-                commandInput.setText(heard)
-                commandInput.setSelection(heard.length)
-                if (shouldAutoExecute) {
-                    voiceReviewText.visibility = View.GONE
-                    commandInput.post { handleCommand() }
-                    return@registerForActivityResult
-                }
-                val reviewMessage = getString(R.string.voice_review, heard)
-                resultCard.visibility = View.GONE
-                voiceReviewText.text = reviewMessage
-                voiceReviewText.visibility = View.VISIBLE
-                runCommandButton.post {
-                    runCommandButton.requestFocus()
-                }
-                speak(reviewMessage)
-            } else {
-                voiceReviewText.visibility = View.GONE
-                showToast(getString(R.string.voice_no_result))
-            }
-        } else {
-            voiceReviewText.visibility = View.GONE
-            showToast(getString(R.string.voice_no_result))
-        }
+    private val voicePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val autoExecute = pendingVoiceAutoExecute ?: return@registerForActivityResult
+        pendingVoiceAutoExecute = null
+        if (granted) startVoiceInput(autoExecute)
+        else showResult(getString(R.string.voice_input_permission_denied), success = false)
     }
 
     private val wakeWordPermissionLauncher = registerForActivityResult(
@@ -184,13 +154,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { view, insets ->
+        bindViews()
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            mainScroll.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            listeningOverlay.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             insets
         }
-
-        bindViews()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+        onBackPressedDispatcher.addCallback(this, voiceBackCallback)
+        listeningOverlay.onCancel { finishVoiceInput() }
+        ViewCompat.setAccessibilityPaneTitle(listeningOverlay, getString(R.string.voice_listening))
         configureActions()
         learnedRouteMemory = LearnedRouteMemory(this)
         textToSpeech = TextToSpeech(this, this)
@@ -200,6 +176,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        finishVoiceInput(animated = false)
         setIntent(intent)
         receiveOverlayContext(intent)
     }
@@ -212,6 +189,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     override fun onStop() {
+        pendingVoiceAutoExecute = null
+        finishVoiceInput(animated = false)
         if (fromOverlay && !awaitingVoiceRecognition) {
             requestGeneration += 1
             openAiPlanner.cancelPending()
@@ -222,6 +201,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     override fun onDestroy() {
+        finishVoiceInput(animated = false)
         requestGeneration += 1
         automaticCommandRunnable?.let(contextExpiryHandler::removeCallbacks)
         automaticCommandRunnable = null
@@ -253,6 +233,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         commandInput = findViewById(R.id.commandInput)
         voiceReviewText = findViewById(R.id.voiceReviewText)
         voiceButton = findViewById(R.id.voiceButton)
+        listeningOverlay = findViewById(R.id.listeningOverlay)
         runCommandButton = findViewById(R.id.runCommandButton)
         progressCard = findViewById(R.id.progressCard)
         progressDetail = findViewById(R.id.progressDetail)
@@ -471,26 +452,166 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun startVoiceInput(autoExecute: Boolean = false) {
+        if (busy || awaitingVoiceRecognition || pendingVoiceAutoExecute != null ||
+            listeningOverlay.visibility == View.VISIBLE || isFinishing || isDestroyed) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED) {
+            pendingVoiceAutoExecute = autoExecute
+            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            showResult(getString(R.string.voice_input_unavailable), success = false)
+            return
+        }
+        textToSpeech?.stop()
+        hideKeyboard()
         pauseWakeWordListening()
         autoExecuteVoiceResult = autoExecute
         voiceReviewText.visibility = View.GONE
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.command_title))
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-        }
         awaitingVoiceRecognition = true
         voiceOverlaySessionId = if (fromOverlay) externalContextSessionId else 0L
-        runCatching { voiceLauncher.launch(intent) }
-            .onFailure {
-                resumeWakeWordListening()
-                autoExecuteVoiceResult = false
-                awaitingVoiceRecognition = false
-                voiceOverlaySessionId = 0L
-                voiceReviewText.visibility = View.GONE
-                showToast(getString(R.string.voice_unavailable))
+        val generation = ++voiceRecognitionGeneration
+        voiceButton.isEnabled = false
+        mainScroll.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        voiceBackCallback.isEnabled = true
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            previousLightStatusBars = isAppearanceLightStatusBars
+            previousLightNavigationBars = isAppearanceLightNavigationBars
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+        listeningOverlay.showFrom(voiceButton)
+        voiceTimeoutRunnable = Runnable {
+            if (generation == voiceRecognitionGeneration) {
+                finishVoiceInput(errorRes = R.string.voice_input_no_result)
             }
+        }.also { contextExpiryHandler.postDelayed(it, 45_000L) }
+        // Let the wake-word service release its microphone while the button expands.
+        voiceStartRunnable = Runnable {
+            voiceStartRunnable = null
+            if (generation != voiceRecognitionGeneration || !awaitingVoiceRecognition) return@Runnable
+            runCatching {
+                voiceRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also {
+                    it.setRecognitionListener(voiceRecognitionListener(generation))
+                }
+                voiceRecognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                })
+            }.onFailure { finishVoiceInput(errorRes = R.string.voice_input_unavailable) }
+        }.also { contextExpiryHandler.postDelayed(it, 180L) }
+    }
+
+    private fun voiceRecognitionListener(generation: Long) = object : RecognitionListener {
+        private fun isCurrent() = awaitingVoiceRecognition && generation == voiceRecognitionGeneration
+
+        override fun onReadyForSpeech(params: Bundle?) {
+            if (isCurrent()) listeningOverlay.setListening(true)
+        }
+
+        override fun onBeginningOfSpeech() {
+            if (isCurrent()) listeningOverlay.onSpeechStarted()
+        }
+
+        override fun onRmsChanged(rmsdB: Float) {
+            if (isCurrent()) listeningOverlay.updateSoundLevel(rmsdB)
+        }
+
+        override fun onEndOfSpeech() {
+            if (isCurrent()) listeningOverlay.setListening(false)
+        }
+
+        override fun onResults(results: Bundle?) {
+            if (!isCurrent()) return
+            val heard = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()?.trim()?.takeIf(String::isNotEmpty)
+            listeningOverlay.showTranscript(heard)
+            finishVoiceInput(heard, if (heard == null) R.string.voice_input_no_result else null)
+        }
+
+        override fun onError(error: Int) {
+            if (!isCurrent()) return
+            finishVoiceInput(errorRes = when (error) {
+                SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> R.string.voice_input_no_result
+                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> R.string.voice_input_network_error
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> R.string.voice_input_permission_denied
+                else -> R.string.voice_input_unavailable
+            })
+        }
+
+        override fun onBufferReceived(buffer: ByteArray?) = Unit
+        override fun onPartialResults(partialResults: Bundle?) {
+            if (!isCurrent()) return
+            listeningOverlay.showTranscript(
+                partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull(),
+            )
+        }
+        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    }
+
+    private fun finishVoiceInput(heard: String? = null, errorRes: Int? = null, animated: Boolean = true) {
+        if (!::listeningOverlay.isInitialized ||
+            (!awaitingVoiceRecognition && listeningOverlay.visibility != View.VISIBLE)) return
+        val shouldAutoExecute = autoExecuteVoiceResult
+        val launchedOverlaySessionId = voiceOverlaySessionId
+        val wasListening = awaitingVoiceRecognition
+        val generation = ++voiceRecognitionGeneration
+        awaitingVoiceRecognition = false
+        autoExecuteVoiceResult = false
+        voiceOverlaySessionId = 0L
+        voiceStartRunnable?.let(contextExpiryHandler::removeCallbacks)
+        voiceStartRunnable = null
+        voiceTimeoutRunnable?.let(contextExpiryHandler::removeCallbacks)
+        voiceTimeoutRunnable = null
+        val recognizer = voiceRecognizer
+        voiceRecognizer = null
+        runCatching { recognizer?.cancel() }
+        runCatching { recognizer?.destroy() }
+        if (wasListening) resumeWakeWordListening()
+        voiceBackCallback.isEnabled = false
+        listeningOverlay.hide(animated) {
+            if (generation != voiceRecognitionGeneration) return@hide
+            mainScroll.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            voiceButton.isEnabled = !busy
+            WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = previousLightStatusBars
+                isAppearanceLightNavigationBars = previousLightNavigationBars
+            }
+            if (isFinishing || isDestroyed) return@hide
+            if (errorRes != null) {
+                showResult(getString(errorRes), success = false)
+                voiceButton.requestFocus()
+                return@hide
+            }
+            if (heard == null) {
+                voiceButton.requestFocus()
+                return@hide
+            }
+            if (launchedOverlaySessionId != 0L &&
+                (!fromOverlay || externalContextSessionId != launchedOverlaySessionId ||
+                    !ContextLifetime.isFresh(SystemClock.elapsedRealtime(),
+                        externalContextCapturedAtElapsedRealtime, OVERLAY_CONTEXT_TTL_MILLIS))) {
+                val message = getString(R.string.overlay_context_expired)
+                showResult(message, success = false)
+                speak(message)
+                return@hide
+            }
+            commandInput.setText(heard)
+            commandInput.setSelection(heard.length)
+            if (shouldAutoExecute) {
+                handleCommand()
+            } else {
+                val reviewMessage = getString(R.string.voice_review, heard)
+                resultCard.visibility = View.GONE
+                voiceReviewText.text = reviewMessage
+                voiceReviewText.visibility = View.VISIBLE
+                runCommandButton.requestFocus()
+                speak(reviewMessage)
+            }
+        }
     }
 
     private fun showVoiceDisclosure(autoExecute: Boolean) {
@@ -1228,6 +1349,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         )
         contextExpiryRunnable = Runnable {
             if (fromOverlay && externalContextSessionId == sessionId) {
+                finishVoiceInput(animated = false)
                 requestGeneration += 1
                 openAiPlanner.cancelPending()
                 val message = getString(R.string.overlay_context_expired)

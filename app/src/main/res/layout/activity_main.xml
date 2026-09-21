@@ -195,4 +195,11 @@
             </LinearLayout>
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
+
+    <com.hwanghj09.sonju.voice.ListeningOverlayView
+        android:id="@+id/listeningOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:elevation="16dp"
+        android:visibility="invisible" />
 </FrameLayout>

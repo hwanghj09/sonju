@@ -54,6 +54,15 @@
     <string name="command_hint">예: 와이파이 설정을 열어 줘</string>
     <string name="voice_button">말하기</string>
     <string name="voice_button_description">손주에게 말하기 시작</string>
+    <string name="voice_preparing">듣기 준비 중이에요</string>
+    <string name="voice_listening">듣고 있어요</string>
+    <string name="voice_processing">말씀을 확인하고 있어요</string>
+    <string name="voice_cancel">취소</string>
+    <string name="voice_cancel_description">말하기 취소</string>
+    <string name="voice_input_permission_denied">말씀을 들으려면 마이크 권한이 필요해요. 말하기를 다시 누르거나 앱 설정에서 마이크를 허용해 주세요.</string>
+    <string name="voice_input_no_result">말씀을 잘 듣지 못했어요. 말하기 버튼을 눌러 다시 말씀해 주세요.</string>
+    <string name="voice_input_network_error">음성 인식에 연결하지 못했어요. 인터넷 연결을 확인하고 다시 말씀해 주세요.</string>
+    <string name="voice_input_unavailable">음성 인식을 시작하지 못했어요. 잠시 후 말하기 버튼을 다시 눌러 주세요.</string>
     <string name="home_voice_example">“이 화면에서 검색 어떻게 해?”</string>
     <string name="open_privacy_page">개인정보 보호 방식 열기</string>
     <string name="privacy_page_title">개인정보 보호 방식</string>
