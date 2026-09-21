@@ -17,6 +17,7 @@
 - 다른 앱에서 받은 명령은 손주 Activity를 열지 않고 접근성 서비스 안에서 계획·안전 검사·실행하며 필요한 확인도 하단 오버레이에 표시
 - `손주야 + 명령` 백그라운드 호출
 - `AccessibilityNodeInfo`의 text·description·hint·pane·state·focus·heading·지원 action·화면 좌표를 수집하고 민감값은 모델 입력 전에 제거
+- 전면 앱의 Android 토스트를 최근 30초의 읽기 전용 관찰로 전달하며, 안내에 따른 재판단과 중복 클릭 방지를 지원. [토스트 실기기 검증](docs/TOAST_FEEDBACK.md)
 - OpenAI Responses API `v1`, 기본 `gpt-5.6-luna`, `reasoning.effort=none`, `store=false`, strict JSON Schema 구조화 계획
 - 모든 AI 계획에 고정 `final_goal`, 실행 앱, 목표 페이지/기능, 전체 도구 집합, 전략, 관찰 가능한 완료 조건, 수정 이유를 필수 포함
 - 실제 실행은 한 번에 한 도구만 수행한 뒤 새 화면을 관찰하는 `관찰 → 계획 → 도구 → 검증 → 재계획` 루프

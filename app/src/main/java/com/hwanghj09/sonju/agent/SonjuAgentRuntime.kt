@@ -56,6 +56,11 @@ class SonjuAgentRuntime private constructor(
     fun fastPathPlan(command: String, snapshot: UiSnapshot, session: AutonomySession? = null): AgentPlan? {
         if (session != null && session.finalGoal != command) return null
         if (session?.aiRecoveryRequested == true) return null
+        if (session != null && snapshot.recentToasts.any { it.packageName == snapshot.packageName &&
+                it.receivedAtMillis >= session.startedAtMillis }) {
+            requestToastReview(session)
+            return null
+        }
         val observedScreen = AccessibilityScreenParser.parse(snapshot)
         val requestedTask = canonicalTask(command, observedScreen)
         fun bind(skill: AppSkill): CanonicalTask? {
@@ -183,6 +188,13 @@ class SonjuAgentRuntime private constructor(
             } else storedStep?.action?.visualFrameHash,
             visualFallback = storedStep?.action?.let { it.type == ActionType.CLICK_COORDINATE || it.visualFrameHash != null } == true,
         )
+    }
+
+    fun requestToastReview(session: AutonomySession) {
+        session.activeSkillId?.let(skillRepository::get)?.let { skill ->
+            session.beginSkillRepair(skill.skillId, skill.version, session.nextSkillStep)
+        }
+        session.requestAiRecovery("앱에서 새 토스트 안내를 받았습니다. 안내의 의미와 현재 결과를 확인하고, 이미 응답한 동작을 그대로 반복하지 마세요.")
     }
 
     private fun fingerprint(skill: AppSkill, task: CanonicalTask, snapshot: UiSnapshot): String =

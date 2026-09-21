@@ -6,6 +6,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /** In-memory records only. The alternate editor deliberately invalidates a learned route. */
 public class AppSkillLifecycleFixtureActivity extends Activity {
@@ -17,6 +18,20 @@ public class AppSkillLifecycleFixtureActivity extends Activity {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(24, 80, 24, 24);
         setContentView(layout);
+        if (getIntent().getBooleanExtra("toast", false)) {
+            int[] attempts = {0};
+            title("토스트 연습");
+            button("기본 항목", () -> {
+                attempts[0]++;
+                Toast.makeText(this, "기본 항목은 사용할 수 없습니다. 대체 항목을 선택하세요.", Toast.LENGTH_SHORT).show();
+            });
+            button("대체 항목", () -> {
+                layout.removeAllViews();
+                title("대체 작업 완료");
+                title("기본 항목 실행 횟수: " + attempts[0]);
+            });
+            return;
+        }
         title("기록 연습");
         button("새 기록", this::editor);
     }

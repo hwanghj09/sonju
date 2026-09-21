@@ -550,6 +550,22 @@ class GeneralSkillLifecycleTest {
         assertEquals(0, replay.modelCallCount)
     }
 
+    @Test fun freshToastFeedbackReturnsAnActiveSkillToTheModelAtItsCurrentStep() {
+        val request = command("여행 준비")
+        val stored = learn(request, "여행 준비")
+        val replay = AutonomySession(request, start, 100)
+        val oldFeedback = start.copy(recentToasts = listOf(ToastMessage(1, start.packageName, "이전 작업 안내", 50)))
+        execute(replay, requireNotNull(runtime.fastPathPlan(request, oldFeedback, replay)), start, editor)
+        val feedback = editor.copy(recentToasts = listOf(ToastMessage(2, editor.packageName, "입력 조건을 확인하세요", 120)))
+        assertNull(runtime.fastPathPlan(request, feedback, replay))
+        assertTrue(replay.aiRecoveryRequested)
+        assertEquals(stored.skillId, replay.skillRepair!!.skillId)
+        assertEquals(1, replay.skillRepair!!.stepIndex)
+        assertEquals(stored.version, repository.get(stored.skillId)!!.version)
+        assertFalse(runtime.goalSatisfied(request, model(AgentAction(ActionType.FINISH, "끝")).copy(
+            goalCompleted = true, goalChecks = listOf(GoalCheck("toast_event=2", "입력 조건을 확인하세요"))), feedback, replay))
+    }
+
     private fun learn(request: String, value: String, resultText: String = value): AppSkill {
         val learning = run(request)
         assertTrue(learning.reserveModelCall(1))

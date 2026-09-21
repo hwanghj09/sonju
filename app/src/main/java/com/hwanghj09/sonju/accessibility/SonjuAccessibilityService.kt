@@ -69,6 +69,8 @@ import com.hwanghj09.sonju.agent.UiElement
 import com.hwanghj09.sonju.agent.UiNodeAction
 import com.hwanghj09.sonju.agent.UiSnapshot
 import com.hwanghj09.sonju.agent.UserFeedbackMemory
+import com.hwanghj09.sonju.agent.ToastFeedback
+import com.hwanghj09.sonju.agent.hasNewToastSince
 import com.hwanghj09.sonju.ai.OpenAiPlanner
 import com.hwanghj09.sonju.ai.VisualScreenResult
 import com.hwanghj09.sonju.execution.ExecutionFailureReason
@@ -144,6 +146,7 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val eventMonitor = AccessibilityEventMonitor(mainHandler)
+    private val toastFeedback = ToastFeedback()
     private val snapshotExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "SonjuSnapshot").apply { isDaemon = true }
     }
@@ -1271,13 +1274,23 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun handleOverlayPlan(command: String, snapshot: UiSnapshot, candidate: AgentPlan,
                                   completionObserved: Boolean = false) {
+        // A toast can arrive while the model is planning without changing any UI node.
+        if (withToastFeedback(snapshot).hasNewToastSince(snapshot)) {
+            autonomySession?.let(architectureRuntime::requestToastReview)
+            if (!scheduleProactiveReplan(command, "앱의 새 안내를 확인하고 있어요…")) {
+                finishAutonomyAttempt()
+                deliverScreenExplanation("앱에서 새 안내가 나타나 현재 결과를 다시 확인해야 해요.")
+            }
+            return
+        }
         if (candidate.goalCompleted && candidate.actions.none { it.type != ActionType.FINISH } &&
             !completionObserved) {
             val commandGeneration = overlayCommandGeneration
             captureLiveSnapshotAsync(executionGeneration, requireStableRevision = false) { live, _, _ ->
                 if (commandGeneration != overlayCommandGeneration || voicePanel == null) return@captureLiveSnapshotAsync
                 if (live != null) {
-                    handleOverlayPlan(command, live, candidate, completionObserved = true)
+                    if (live.hasNewToastSince(snapshot)) handleOverlayPlan(command, snapshot, candidate)
+                    else handleOverlayPlan(command, live, candidate, completionObserved = true)
                 } else if (!scheduleProactiveReplan(command, "마지막 결과를 다시 확인하고 있어요…")) {
                     finishAutonomyAttempt()
                     deliverScreenExplanation("마지막 결과를 화면에서 확인할 수 없어 멈췄어요.")
@@ -2075,6 +2088,26 @@ class SonjuAccessibilityService : AccessibilityService() {
         val currentEvent = event ?: return
         val eventPackage = currentEvent.packageName?.toString().orEmpty()
         val eventClass = currentEvent.className?.toString().orEmpty()
+        if (currentEvent.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+            // Toast events have no source node; the text must be read from the event itself.
+            // Ordinary notifications and background apps are not part of this observation.
+            val foregroundPackage = bestAvailableApplicationRoot()?.packageName?.toString()
+            debugTrace("transient event package=$eventPackage class=$eventClass foreground=$foregroundPackage " +
+                "textCount=${currentEvent.text.size} hasNotification=${currentEvent.parcelableData != null}")
+            if (eventClass == Toast::class.java.name && currentEvent.parcelableData == null &&
+                eventPackage != packageName && eventPackage.isNotBlank() &&
+                SystemClock.uptimeMillis() - currentEvent.eventTime in 0..ToastFeedback.MAX_AGE_MILLIS &&
+                getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked != true &&
+                foregroundPackage == eventPackage) {
+                val text = currentEvent.text.take(8).joinToString("\n") { it.toString().take(2_000) }
+                if (toastFeedback.record(eventPackage, text, SystemClock.elapsedRealtime())) {
+                    eventMonitor.onRevision(epoch.incrementAndGet())
+                    debugTrace("toast observed package=$eventPackage")
+                }
+            }
+            // Feedback invalidates old plans, but does not create nodes or prove a UI transition.
+            return
+        }
         if (currentEvent.eventType in setOf(
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
                 AccessibilityEvent.TYPE_WINDOWS_CHANGED,
@@ -2268,6 +2301,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        toastFeedback.clear()
         stopCurrentExecution(preserveUserHandoff = true)
         overlayCommandGeneration += 1
         overlayOpenAiPlanner.close()
@@ -2358,9 +2392,10 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
 
     private fun snapshotWithTrustedRoute(rawSnapshot: UiSnapshot): UiSnapshot {
-        val snapshot = snapshotWithEditorAction(rawSnapshot)
+        val snapshot = withToastFeedback(snapshotWithEditorAction(rawSnapshot))
         if (getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true) {
             return snapshot.copy(trustedSettingsRoute = null,
+                recentToasts = emptyList(),
                 userIntervention = com.hwanghj09.sonju.agent.UserIntervention.Kind.DEVICE_UNLOCK)
         }
         // Route provenance is capability-like data. Never trust a route carried by an old cache;
@@ -2394,6 +2429,11 @@ class SonjuAccessibilityService : AccessibilityService() {
         if (!fresh) clearTrustedSettingsContext()
         return untrustedSnapshot
     }
+
+    private fun withToastFeedback(snapshot: UiSnapshot): UiSnapshot = snapshot.copy(recentToasts =
+        if (snapshot.userIntervention != null || snapshot.elements.any { it.visible && it.sensitive } ||
+            getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true) emptyList()
+        else toastFeedback.recent(snapshot.packageName, SystemClock.elapsedRealtime()))
 
     private fun snapshotWithEditorAction(snapshot: UiSnapshot): UiSnapshot {
         val clean = snapshot.copy(elements = snapshot.elements.map { it.copy(imeAction = null) })
@@ -3771,7 +3811,9 @@ class SonjuAccessibilityService : AccessibilityService() {
             callback(
                 ExecutionResult(
                     success = false,
-                    message = "‘${action.description}’ 동작 뒤 화면 변화를 확인하지 못해 완료로 처리하지 않았습니다.",
+                    message = if (afterSnapshot?.hasNewToastSince(expectedSnapshot) == true)
+                        "앱의 토스트 안내를 받았습니다. 같은 동작을 반복하지 말고 안내와 현재 결과를 확인해야 합니다."
+                    else "‘${action.description}’ 동작 뒤 화면 변화를 확인하지 못해 완료로 처리하지 않았습니다.",
                     completedSteps = completedSteps,
                     failureReason = ExecutionFailureReason.POSTCONDITION_TIMEOUT,
                     method = executionMethod(action),
@@ -3816,6 +3858,10 @@ class SonjuAccessibilityService : AccessibilityService() {
                     return@verifyActionPostconditionAsync
                 }
                 if (!verified) {
+                    if (afterSnapshot?.hasNewToastSince(expectedSnapshot) == true) {
+                        failPostcondition(afterSnapshot)
+                        return@verifyActionPostconditionAsync
+                    }
                     val submission = textSubmissionDispatch?.takeIf { it.generation == generation }
                     if (action.type == ActionType.SUBMIT_TEXT && submission != null && submission.method < 3 &&
                         afterSnapshot != null && submission.before.hasSameContentIgnoringLayoutAs(afterSnapshot) &&
@@ -4015,7 +4061,11 @@ class SonjuAccessibilityService : AccessibilityService() {
                     timerRemaining, callback) }, 1100)
                 return@captureLiveSnapshotAsync
             }
-            val verified = when {
+            // Toasts often move focus while the requested effect was rejected. Focus/layout
+            // drift must not turn that feedback into a successful action transition.
+            val toastWithoutEffect = afterSnapshot?.let { it.hasNewToastSince(beforeSnapshot) &&
+                beforeSnapshot.hasSameContentIgnoringLayoutAs(it) } == true
+            val verified = !toastWithoutEffect && when {
                 action.type == ActionType.START_TIMER ->
                     timerRemaining != null && timerBaseline != null && timerRemaining < timerBaseline
                 action.type == ActionType.OPEN_URL -> afterSnapshot?.let {
@@ -4101,7 +4151,8 @@ class SonjuAccessibilityService : AccessibilityService() {
                 cacheObservedApplicationSnapshot(afterSnapshot)
                 verifiedPostconditionGeneration = generation
             }
-            if (verified || attempt >= MAX_POSTCONDITION_OBSERVE_RETRIES) {
+            if (verified || afterSnapshot?.hasNewToastSince(beforeSnapshot) == true ||
+                attempt >= MAX_POSTCONDITION_OBSERVE_RETRIES) {
                 callback(verified, afterSnapshot)
                 return@captureLiveSnapshotAsync
             }

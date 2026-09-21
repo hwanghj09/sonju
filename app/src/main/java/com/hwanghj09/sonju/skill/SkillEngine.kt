@@ -5,6 +5,7 @@ import com.hwanghj09.sonju.agent.AutonomySession
 import com.hwanghj09.sonju.agent.GoalCheck
 import com.hwanghj09.sonju.agent.normalizeGoalText
 import com.hwanghj09.sonju.agent.UiSnapshot
+import com.hwanghj09.sonju.agent.hasNewToastSince
 import com.hwanghj09.sonju.execution.RetryPolicy
 import com.hwanghj09.sonju.execution.StepFallbackPolicy
 import com.hwanghj09.sonju.grounding.GroundingQuery
@@ -436,6 +437,11 @@ object SkillLearner {
     fun shortestTrace(history: List<AutonomySession.Trace>): List<AutonomySession.Trace> {
         val route = mutableListOf<AutonomySession.Trace>()
         history.forEach { trace ->
+            // An unchanged screen with toast feedback may conceal an effect or a rejection.
+            // Never erase that unresolved action and learn a route which silently omits it.
+            if (!trace.succeeded && trace.beforeObservation?.let { before ->
+                    trace.afterObservation?.hasNewToastSince(before)
+                } == true) return emptyList()
             // A click rejected before dispatch is an observation delay, including ongoing loading.
             // Otherwise fold only focus drift on the same semantic screen; never failed text input.
             if (!trace.succeeded && trace.action.type == ActionType.CLICK &&

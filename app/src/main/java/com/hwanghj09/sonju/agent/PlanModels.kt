@@ -173,6 +173,8 @@ data class UiSnapshot(
     val windowBounds: ScreenBounds? = null,
     /** On-device OCR for read-only page evidence. Never exposed as executable nodes or persisted. */
     val localReadOnlyText: List<String> = emptyList(),
+    /** Recent redacted toast events. Excluded from node IDs, fingerprints and AppSkill storage. */
+    val recentToasts: List<ToastMessage> = emptyList(),
     /** Local category only, detected before credential text is redacted. */
     val userIntervention: UserIntervention.Kind? = null,
 ) {
