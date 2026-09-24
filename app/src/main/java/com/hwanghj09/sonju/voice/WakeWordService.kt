@@ -39,6 +39,7 @@ class WakeWordService : Service(), RecognitionListener {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         running = true
         createNotificationChannel()
         if (!hasMicrophonePermission()) {
@@ -66,6 +67,7 @@ class WakeWordService : Service(), RecognitionListener {
         releaseRecognizer()
         offlineModel?.close()
         offlineModel = null
+        if (instance === this) instance = null
         super.onDestroy()
     }
 
@@ -437,5 +439,9 @@ class WakeWordService : Service(), RecognitionListener {
         @Volatile
         var running: Boolean = false
             private set
+
+        private var instance: WakeWordService? = null
+        // Callers and service run on the main thread: release recording before starting command ASR.
+        internal fun pauseForCommand() { instance?.pauseListening() }
     }
 }

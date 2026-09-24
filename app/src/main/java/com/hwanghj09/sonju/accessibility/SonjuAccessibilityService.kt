@@ -25,7 +25,6 @@ import android.provider.Settings
 import android.provider.AlarmClock
 import android.util.Log
 import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -79,6 +78,8 @@ import com.hwanghj09.sonju.shopping.BaeminNavigator
 import com.hwanghj09.sonju.shopping.BaeminOrderLocalPlanner
 import com.hwanghj09.sonju.shopping.BaeminScreenAction
 import com.hwanghj09.sonju.voice.WakeWordService
+import com.hwanghj09.sonju.voice.CommandRecognition
+import com.hwanghj09.sonju.voice.CommandSpeechRecognizer
 import com.hwanghj09.sonju.verifier.VerificationResult
 import com.hwanghj09.sonju.verifier.VerifiedAction
 import com.hwanghj09.sonju.verifier.VerifiedPlan
@@ -175,7 +176,7 @@ class SonjuAccessibilityService : AccessibilityService() {
     private var controlGlowWindowManager: WindowManager? = null
     private var voicePanel: View? = null
     private var voicePanelTranscript: TextView? = null
-    private var voicePanelRecognizer: SpeechRecognizer? = null
+    private var voicePanelRecognizer: CommandSpeechRecognizer? = null
     private var voiceRecognitionGeneration = 0L
     private var pendingVoiceConfirmation: (() -> Unit)? = null
     private var voiceConfirmationMessage = ""
@@ -188,7 +189,6 @@ class SonjuAccessibilityService : AccessibilityService() {
     }
     private var voicePanelCommandDispatched = false
     private var voicePanelAccumulatedCommand = ""
-    private var voicePanelWaitingForContinuation = false
     private var voicePanelFromOverlay = false
     private var voicePanelConfirmButton: TextView? = null
     private var feedbackPromptVisible = false
@@ -324,6 +324,8 @@ class SonjuAccessibilityService : AccessibilityService() {
             textToSpeech?.stop()
         }
     }
+
+    internal fun silenceForVoiceInput() = stopExplanationSpeech()
 
     private fun showQuickVoiceButton() {
         if (quickVoiceButton != null) return
@@ -753,27 +755,21 @@ class SonjuAccessibilityService : AccessibilityService() {
 
     private fun beginVoicePanelListening() {
         if (voicePanel == null) return
+        stopExplanationSpeech()
         stopVoicePanelRecognizer()
         feedbackPromptVisible = false
         voicePanel?.findViewById<View>(R.id.feedbackActions)?.visibility = View.GONE
         voicePanelCommandDispatched = false
         voicePanelAccumulatedCommand = ""
-        voicePanelWaitingForContinuation = false
         mainHandler.postDelayed(::startVoicePanelListening, VOICE_PANEL_START_DELAY_MILLIS)
         resetVoicePanelTimeout()
     }
 
     private val voicePanelTimeoutRunnable = Runnable {
         if (!voicePanelCommandDispatched && voicePanel != null) {
-            if (voicePanelAccumulatedCommand.isNotBlank()) {
-                finalizeVoicePanelCommand()
-            } else {
-                showVoicePanelFailure(R.string.voice_no_result)
-            }
+            showVoicePanelFailure(R.string.voice_no_result)
         }
     }
-
-    private val voicePanelFinalizeRunnable = Runnable { finalizeVoicePanelCommand() }
 
     private fun resetVoicePanelTimeout() {
         mainHandler.removeCallbacks(voicePanelTimeoutRunnable)
@@ -786,7 +782,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         if (voicePanelRecognizer != null) return
         val generation = ++voiceRecognitionGeneration
         val speechRecognizer = runCatching {
-            SpeechRecognizer.createSpeechRecognizer(this).also {
+            CommandSpeechRecognizer(this).also {
                 it.setRecognitionListener(voicePanelRecognitionListener(generation))
             }
         }.getOrElse {
@@ -794,25 +790,7 @@ class SonjuAccessibilityService : AccessibilityService() {
             return
         }
         voicePanelRecognizer = speechRecognizer
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-            putExtra(
-                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
-                VOICE_COMPLETE_SILENCE_MILLIS,
-            )
-            putExtra(
-                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
-                VOICE_POSSIBLY_COMPLETE_SILENCE_MILLIS,
-            )
-            putExtra(
-                RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
-                VOICE_MINIMUM_LENGTH_MILLIS,
-            )
-        }
+        val intent = CommandRecognition.intent(this)
         runCatching { speechRecognizer.startListening(intent) }
             .onFailure { showVoicePanelFailure(R.string.voice_unavailable) }
     }
@@ -827,8 +805,6 @@ class SonjuAccessibilityService : AccessibilityService() {
 
         override fun onBeginningOfSpeech() {
             if (generation != voiceRecognitionGeneration || pendingVoiceConfirmation != null) return
-            voicePanelWaitingForContinuation = false
-            mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
             resetVoicePanelTimeout()
         }
         override fun onRmsChanged(rmsdB: Float) = Unit
@@ -836,7 +812,6 @@ class SonjuAccessibilityService : AccessibilityService() {
         override fun onEndOfSpeech() = Unit
         override fun onPartialResults(partialResults: Bundle?) {
             if (generation != voiceRecognitionGeneration || pendingVoiceConfirmation != null) return
-            mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
             resetVoicePanelTimeout()
             updateVoicePanelText(partialResults)
         }
@@ -849,26 +824,12 @@ class SonjuAccessibilityService : AccessibilityService() {
             }
             val segment = firstRecognizedText(results)
             if (segment == null) {
-                if (voicePanelAccumulatedCommand.isNotBlank()) {
-                    finalizeVoicePanelCommand()
-                    return
-                }
                 showVoicePanelFailure(R.string.voice_no_result)
                 return
             }
-            voicePanelAccumulatedCommand = mergeVoiceSegments(
-                voicePanelAccumulatedCommand,
-                segment,
-            )
+            voicePanelAccumulatedCommand = segment
             voicePanelTranscript?.text = voicePanelAccumulatedCommand
-            voicePanelWaitingForContinuation = true
-            stopVoicePanelRecognizer()
-            mainHandler.postDelayed(::startVoicePanelListening, VOICE_CONTINUATION_RESTART_MILLIS)
-            mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
-            mainHandler.postDelayed(
-                voicePanelFinalizeRunnable,
-                VOICE_CONTINUATION_GRACE_MILLIS,
-            )
+            finalizeVoicePanelCommand()
         }
 
         override fun onError(error: Int) {
@@ -881,35 +842,16 @@ class SonjuAccessibilityService : AccessibilityService() {
                 return
             }
             if (voicePanelCommandDispatched) return
-            if (voicePanelWaitingForContinuation) return
-            if (voicePanelAccumulatedCommand.isNotBlank()) {
-                finalizeVoicePanelCommand()
-            } else {
-                showVoicePanelFailure(R.string.voice_no_result)
-            }
+            showVoicePanelFailure(if (error == SpeechRecognizer.ERROR_NETWORK ||
+                error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT) R.string.voice_input_network_error else R.string.voice_no_result)
         }
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
     }
 
     private fun updateVoicePanelText(results: Bundle?) {
         firstRecognizedText(results)?.let { partial ->
-            voicePanelTranscript?.text = mergeVoiceSegments(
-                voicePanelAccumulatedCommand,
-                partial,
-            )
+            voicePanelTranscript?.text = partial
         }
-    }
-
-    private fun mergeVoiceSegments(accumulated: String, segment: String): String {
-        val previous = accumulated.trim()
-        val current = segment.trim()
-        return when {
-            previous.isBlank() -> current
-            current.isBlank() -> previous
-            current.startsWith(previous, ignoreCase = true) -> current
-            previous.endsWith(current, ignoreCase = true) -> previous
-            else -> "$previous $current"
-        }.take(1_000)
     }
 
     private fun finalizeVoicePanelCommand() {
@@ -920,10 +862,8 @@ class SonjuAccessibilityService : AccessibilityService() {
             return
         }
         voicePanelCommandDispatched = true
-        voicePanelWaitingForContinuation = false
         if (!beginCommandControl()) return
         mainHandler.removeCallbacks(voicePanelTimeoutRunnable)
-        mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
         voicePanelTranscript?.text = command
         val capturedFromOverlay = voicePanelFromOverlay
         stopVoicePanelRecognizer()
@@ -941,7 +881,7 @@ class SonjuAccessibilityService : AccessibilityService() {
         ?.firstOrNull()
         ?.trim()
         ?.takeIf(String::isNotBlank)
-        ?.take(500)
+        ?.takeIf { it.length <= 1_000 }
 
     private fun showVoicePanelFailure(message: Int) {
         val panel = voicePanel ?: return
@@ -985,12 +925,10 @@ class SonjuAccessibilityService : AccessibilityService() {
         clearVoiceConfirmation()
         endCommandControl()
         mainHandler.removeCallbacks(voicePanelTimeoutRunnable)
-        mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
         stopVoicePanelRecognizer()
         stopExplanationSpeech()
         voicePanelConfirmButton = null
         feedbackPromptVisible = false
-        voicePanelWaitingForContinuation = false
         val panel = voicePanel
         voicePanel = null
         voicePanelTranscript = null
@@ -2066,11 +2004,10 @@ class SonjuAccessibilityService : AccessibilityService() {
         stopVoicePanelRecognizer()
         stopExplanationSpeech()
         mainHandler.removeCallbacks(voicePanelTimeoutRunnable)
-        mainHandler.removeCallbacks(voicePanelFinalizeRunnable)
     }
 
     private fun pauseWakeWordListening() {
-        sendWakeWordAction(WakeWordService.ACTION_PAUSE)
+        WakeWordService.pauseForCommand()
     }
 
     private fun resumeWakeWordListening() {
@@ -5475,11 +5412,6 @@ class SonjuAccessibilityService : AccessibilityService() {
         private const val VOICE_PANEL_START_DELAY_MILLIS = 60L
         private const val VOICE_PANEL_TIMEOUT_MILLIS = 25_000L
         private const val VOICE_PANEL_RESULT_DELAY_MILLIS = 220L
-        private const val VOICE_COMPLETE_SILENCE_MILLIS = 3_000L
-        private const val VOICE_POSSIBLY_COMPLETE_SILENCE_MILLIS = 2_200L
-        private const val VOICE_MINIMUM_LENGTH_MILLIS = 1_200L
-        private const val VOICE_CONTINUATION_RESTART_MILLIS = 100L
-        private const val VOICE_CONTINUATION_GRACE_MILLIS = 2_500L
         private const val TOUCH_INDICATOR_DURATION_MILLIS = 1_000L
         private const val PROACTIVE_SEARCH_SETTLE_MILLIS = 250L
         private const val SCROLL_NODE_EFFECT_SETTLE_MILLIS = 300L

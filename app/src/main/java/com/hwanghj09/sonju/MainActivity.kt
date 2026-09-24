@@ -14,7 +14,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.view.View
@@ -59,6 +58,8 @@ import com.hwanghj09.sonju.ai.OpenAiPlanner
 import com.hwanghj09.sonju.shopping.BaeminOrderLocalPlanner
 import com.hwanghj09.sonju.voice.WakeWordService
 import com.hwanghj09.sonju.voice.ListeningOverlayView
+import com.hwanghj09.sonju.voice.CommandRecognition
+import com.hwanghj09.sonju.voice.CommandSpeechRecognizer
 import com.hwanghj09.sonju.verifier.VerificationResult
 import com.hwanghj09.sonju.verifier.VerifiedPlan
 import java.util.Locale
@@ -106,7 +107,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var busy = false
     private var requestGeneration = 0L
     private var automaticCommandRunnable: Runnable? = null
-    private var voiceRecognizer: SpeechRecognizer? = null
+    private var voiceRecognizer: CommandSpeechRecognizer? = null
     private var voiceRecognitionGeneration = 0L
     private var voiceStartRunnable: Runnable? = null
     private var voiceTimeoutRunnable: Runnable? = null
@@ -465,6 +466,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
         textToSpeech?.stop()
+        SonjuAccessibilityService.instance?.silenceForVoiceInput()
         hideKeyboard()
         pauseWakeWordListening()
         autoExecuteVoiceResult = autoExecute
@@ -492,15 +494,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             voiceStartRunnable = null
             if (generation != voiceRecognitionGeneration || !awaitingVoiceRecognition) return@Runnable
             runCatching {
-                voiceRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also {
+                voiceRecognizer = CommandSpeechRecognizer(this).also {
                     it.setRecognitionListener(voiceRecognitionListener(generation))
                 }
-                voiceRecognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                })
+                voiceRecognizer?.startListening(CommandRecognition.intent(this))
             }.onFailure { finishVoiceInput(errorRes = R.string.voice_input_unavailable) }
         }.also { contextExpiryHandler.postDelayed(it, 180L) }
     }
@@ -730,7 +727,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun pauseWakeWordListening() {
-        sendWakeWordAction(WakeWordService.ACTION_PAUSE)
+        WakeWordService.pauseForCommand()
     }
 
     private fun resumeWakeWordListening() {
